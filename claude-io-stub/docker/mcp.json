@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lab": {
+      "command": "/usr/local/bin/stub-client",
+      "args": ["tunnel", "--url", "ws://127.0.0.1:7789/v1/tunnel?side=b"]
+    }
+  }
+}

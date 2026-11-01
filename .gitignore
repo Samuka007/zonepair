@@ -1,0 +1,20 @@
+# Rust
+target/
+
+# Node
+node_modules/
+
+# Logs and throwaway run artifacts
+*.log
+/logs/
+/store/
+/tmp/
+
+# Local env / secrets
+.env
+.env.*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

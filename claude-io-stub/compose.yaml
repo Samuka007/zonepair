@@ -1,0 +1,25 @@
+services:
+  b:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: server
+    environment:
+      CLAUDE_CMD: ${B_CLAUDE_CMD:-}
+    ports:
+      - "127.0.0.1:7789:7789"
+    volumes:
+      - stub-data:/data
+
+  a:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: client
+    environment:
+      CLAUDE_STUB_ENDPOINT: b:7788
+    depends_on:
+      - b
+
+volumes:
+  stub-data:
