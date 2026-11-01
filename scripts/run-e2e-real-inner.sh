@@ -10,7 +10,7 @@ set -euo pipefail
 ENDPOINT="${CLAUDE_STUB_ENDPOINT:?CLAUDE_STUB_ENDPOINT must point at the stub-server}"
 : "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL required (wiring-env.py)}"
 : "${ANTHROPIC_AUTH_TOKEN:?ANTHROPIC_AUTH_TOKEN required (wiring-env.py)}"
-WIRING="${WIRING:-deepseek}"
+WIRING="${WIRING:-anthropic}"
 HOST="${ENDPOINT%%:*}"
 PORT="${ENDPOINT##*:}"
 STORE_BASE="http://${HOST}:${STORE_HTTP_PORT:-7789}"

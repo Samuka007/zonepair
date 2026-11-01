@@ -38,4 +38,7 @@ printf '%s' "$FORK_JSON" | python3 "$MOCK/rpc-check.py" fork-pairs 3
 "$STUB" sess messages "$NEW_ID" | python3 "$MOCK/rpc-check.py" msglen 3
 "$STUB" sess delete "$NEW_ID" | python3 "$MOCK/rpc-check.py" deleted true
 
+echo "== docker: store mirror sync (ADR-0004) =="
+/opt/scripts/mirror-phase.sh "$STUB" "$MOCK" "$DRIVER"
+
 echo "DOCKER E2E PASS"

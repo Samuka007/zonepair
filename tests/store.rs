@@ -138,3 +138,55 @@ async fn fork_errors_are_precise() {
     let count = fs::read_dir(root.join("projects/proj-a")).unwrap().count();
     assert_eq!(count, 1);
 }
+
+#[tokio::test]
+async fn merge_unions_by_uuid_in_stable_order() {
+    let root = tmpdir("merge");
+    let store = Store::new(root.clone());
+    write_session(&root, "s1", 3);
+
+    // Same session, one known uuid + one new uuid: only the new one lands,
+    // appended after the existing lines (order-stable union).
+    let incoming = vec![
+        json!({"uuid": "u-s1-0", "sessionId": "s1", "message": {"content": "dup"}}),
+        json!({"uuid": "u-new", "sessionId": "s1", "parentUuid": "u-s1-2"}),
+    ];
+    let out = store.merge("s1", &incoming).await.unwrap();
+    assert_eq!(out.added, 1);
+    assert_eq!(out.total, 4);
+    let messages = store.messages("s1").await.unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0]["uuid"], json!("u-s1-0"));
+    assert_eq!(messages[3]["uuid"], json!("u-new"));
+    assert_eq!(messages[3]["parentUuid"], json!("u-s1-2"));
+
+    // Re-merging the same lines is idempotent.
+    let out = store.merge("s1", &incoming).await.unwrap();
+    assert_eq!(out.added, 0);
+    assert_eq!(out.total, 4);
+
+    // uuid-less incoming lines are dropped (bookkeeping is regenerated).
+    let out = store
+        .merge("s1", &[json!({"type": "queue-operation"})])
+        .await
+        .unwrap();
+    assert_eq!(out.added, 0);
+
+    // A merge into an unknown session creates it under projects/lab.
+    let out = store
+        .merge("fresh", &[json!({"uuid": "u-f1", "sessionId": "fresh"})])
+        .await
+        .unwrap();
+    assert_eq!(out.added, 1);
+    assert!(root.join("projects/lab/fresh.jsonl").exists());
+}
+
+#[tokio::test]
+async fn list_returns_all_session_stems() {
+    let root = tmpdir("list");
+    let store = Store::new(root.clone());
+    write_session(&root, "b-second", 1);
+    write_session(&root, "a-first", 1);
+    let sessions = store.list().await.unwrap();
+    assert_eq!(sessions, vec!["a-first".to_string(), "b-second".to_string()]);
+}

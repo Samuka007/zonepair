@@ -2,11 +2,11 @@
 # Docker end-to-end with the REAL claude binary in machine B, driven through
 # the stub pair with a non-Anthropic model backend.
 #
+# WIRING=anthropic models.yml providers.anthropic (anthropic-messages gateway,
+#                  baseUrl+apiKey verbatim). DEFAULT.
 # WIRING=deepseek  official DeepSeek <-> Claude Code integration; apiKey from
 #                  models.yml providers.deepseek (ANTHROPIC_BASE_URL=
 #                  https://api.deepseek.com/anthropic, model deepseek-flash).
-# WIRING=anthropic models.yml providers.anthropic (anthropic-messages gateway,
-#                  baseUrl+apiKey verbatim).
 #
 # Credentials are injected as container env only; they are never written to
 # disk in the repo and never printed.
@@ -15,7 +15,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-WIRING="${WIRING:-deepseek}"
+WIRING="${WIRING:-anthropic}"
 MODELS_YML="${MODELS_YML:-$HOME/.omp/agent/models.yml}"
 
 # Load ANTHROPIC_* wiring into this shell without echoing it.

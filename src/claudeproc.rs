@@ -29,10 +29,13 @@ pub fn spawn(
             cmd.env(key, value);
         }
     }
-    cmd.env("CLAUDE_CONFIG_DIR", store);
     for (key, value) in &header.env {
         cmd.env(key, value);
     }
+    // Pinned LAST: the store is a server-side invariant, so a hello header
+    // carrying A's own CLAUDE_CONFIG_DIR (e.g. the mirror dir) must not
+    // redirect where the child writes its transcripts.
+    cmd.env("CLAUDE_CONFIG_DIR", store);
 
     let log_path = log_dir.join(format!("stderr-{conn_tag}.log"));
     let log = std::fs::File::create(&log_path)?;

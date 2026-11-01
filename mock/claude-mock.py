@@ -6,6 +6,10 @@ init -> (assistant text | assistant tool_use -> tool_result -> assistant text)
 
 Just enough to prove the stub relays the Agent-SDK control protocol verbatim,
 including an MCP tool-call round trip riding the same stdio pipe.
+
+Like the real claude, each turn is appended to the session's JSONL under
+CLAUDE_CONFIG_DIR (skipped when unset) — the store-mirror e2e phase relies on
+transcripts actually landing in the store.
 """
 
 import json
@@ -43,6 +47,40 @@ def assistant(blocks):
     })
 
 
+def persist(messages):
+    """Append transcript lines the way real claude does, if a store is set."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if not config_dir:
+        return
+    # One session = one file, wherever it was created before us (the store
+    # mirror may have pushed it under projects/lab): reuse any existing
+    # <session>.jsonl, else create under projects/mock.
+    path = None
+    for root_dir, _dirs, files in os.walk(config_dir):
+        if f"{session}.jsonl" in files:
+            path = os.path.join(root_dir, f"{session}.jsonl")
+            break
+    if path is None:
+        project = os.path.join(config_dir, "projects", "mock")
+        os.makedirs(project, exist_ok=True)
+        path = os.path.join(project, f"{session}.jsonl")
+    existing = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as handle:
+            existing = [line for line in handle if line.strip()]
+    parent = None
+    if existing:
+        parent = json.loads(existing[-1]).get("uuid")
+    with open(path, "a", encoding="utf-8") as handle:
+        for msg in messages:
+            entry = dict(msg)
+            entry["uuid"] = os.urandom(16).hex()
+            entry["sessionId"] = session
+            entry["parentUuid"] = parent
+            parent = entry["uuid"]
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 for raw in sys.stdin:
     raw = raw.strip()
     if not raw:
@@ -65,6 +103,11 @@ for raw in sys.stdin:
             elif isinstance(inner, str):
                 payload += inner
         assistant([{"type": "text", "text": f"TOOL OK {payload}"}])
+        persist([
+            {"type": "user", "message": msg.get("message", {})},
+            {"type": "assistant", "message": {"id": f"msg-{session}", "role": "assistant",
+                                              "content": [{"type": "text", "text": f"TOOL OK {payload}"}]}},
+        ])
         emit({"type": "result", "subtype": "success", "session_id": session, "num_turns": 2, "result": "done"})
         break
 
@@ -78,5 +121,10 @@ for raw in sys.stdin:
         continue
 
     assistant([{"type": "text", "text": "ECHO " + " ".join(texts)}])
+    persist([
+        {"type": "user", "message": msg.get("message", {})},
+        {"type": "assistant", "message": {"id": f"msg-{session}", "role": "assistant",
+                                          "content": [{"type": "text", "text": "ECHO " + " ".join(texts)}]}},
+    ])
     emit({"type": "result", "subtype": "success", "session_id": session, "num_turns": 1, "result": "done"})
     break

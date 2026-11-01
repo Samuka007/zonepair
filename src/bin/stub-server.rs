@@ -127,6 +127,8 @@ struct Req {
     session: Option<String>,
     #[serde(default, rename = "upTo")]
     up_to: Option<String>,
+    #[serde(default)]
+    messages: Option<Vec<serde_json::Value>>,
 }
 
 async fn sess_loop(mut rx: OwnedReadHalf, mut tx: OwnedWriteHalf, store: Arc<Store>) -> Result<()> {
@@ -176,6 +178,13 @@ async fn run_op(store: &Store, req: &Req) -> Result<Value> {
             let session = req.session.as_deref().context("delete needs session")?;
             let deleted = store.delete(session).await?;
             Ok(json!({"ok": true, "deleted": deleted}))
+        }
+        "list" => Ok(json!({"ok": true, "sessions": store.list().await?})),
+        "merge" => {
+            let session = req.session.as_deref().context("merge needs session")?;
+            let messages = req.messages.as_deref().context("merge needs messages")?;
+            let out = store.merge(session, messages).await?;
+            Ok(json!({"ok": true, "added": out.added, "total": out.total}))
         }
         other => bail!("unknown op {other:?}"),
     }

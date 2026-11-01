@@ -83,4 +83,6 @@ fi
 echo "3 concurrent forks produced 3 distinct sessions"
 
 "$ROOT/scripts/assert-nodial.sh" "$SRV_PID" "$PORT"
+"$ROOT/scripts/mirror-phase.sh" "$BIN/stub-client" "$ROOT/mock" "$ROOT/driver/sdk-driver.mjs"
+"$ROOT/scripts/assert-nodial.sh" "$SRV_PID" "$PORT"
 echo "NATIVE E2E PASS (store=$STORE preserved nowhere; logs=$LOGS removed with workdir)"

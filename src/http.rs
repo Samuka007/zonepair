@@ -10,7 +10,7 @@ use axum::{
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path as AxPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -40,6 +40,8 @@ pub fn router(state: AppState) -> Router {
             get(store_exists).delete(store_delete),
         )
         .route("/v1/store/sessions/:id/messages", get(store_messages))
+        .route("/v1/store/sessions/:id/messages", put(store_merge))
+        .route("/v1/store/sessions", get(store_list))
         .route("/v1/store/sessions/:id/fork", post(store_fork))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
@@ -325,4 +327,36 @@ async fn store_delete(
         }
     };
     Json(json!({"ok": true, "deleted": deleted})).into_response()
+}
+
+async fn store_list(State(state): State<AppState>) -> Response {
+    match state.store.list().await {
+        Ok(sessions) => Json(json!({"ok": true, "sessions": sessions})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct MergeBody {
+    messages: Vec<Value>,
+}
+
+async fn store_merge(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    Json(body): Json<MergeBody>,
+) -> Response {
+    match state.store.merge(&id, &body.messages).await {
+        Ok(out) => Json(json!({"ok": true, "added": out.added, "total": out.total}))
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
