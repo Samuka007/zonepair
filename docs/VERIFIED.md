@@ -3,6 +3,32 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-06
+
+- nix packaging: the flake now builds every artifact — `.#stub` (native;
+  `cargo test` runs in `checkPhase`), `.#stub-static` (musl), 
+  `.#stub-client-windows` (`x86_64-pc-windows-gnu`), `.#docker-server` /
+  `.#docker-client` (nixpkgs `dockerTools.buildLayeredImage`). The Dockerfile
+  is gone; `docker/` keeps only the entrypoint and `mcp.json`.
+- `nix build .#stub`: 6/6 store tests pass (`fork` prefix/fresh-ids/chain,
+  uuid-less skip, merge union/idempotency, exists/messages/delete, list).
+- `nix build .#stub-static`: `static-pie linked` (`ldd`: "statically linked"),
+  0 rust-toolchain references. `.#stub-client-windows`: PE32+ x86-64 `.exe`.
+- `nix flake check`: green — `checks.default` (cargo test) + `checks.shellcheck`.
+- `scripts/run-e2e-docker.sh` against the nix-built images: **PASS** — basic
+  turn, MCP round trip, 3 concurrent clients, store RPC
+  (exists/messages/fork/delete), mirror sync (ADR-0004), and the no-dial
+  assertion inside container `b` (pid 1, :7788).
+- `nix develop -c cargo build` + `scripts/run-e2e-native.sh`: PASS (the
+  native suite CI runs).
+- image size after dropping rustc's baked sysroot path
+  (`--remap-path-prefix`; without it the whole fenix toolchain rode along):
+  server 1.15 GB -> 241 MB, client 1.05 GB -> 146 MB.
+- image layer fixups the e2e forced, now in the flake: `fakeNss`
+  (`/etc/nsswitch.conf` — service names did not resolve), `usrBinEnv` +
+  `binSh` (`#!/usr/bin/env bash` did not resolve), writable `/tmp` (`mktemp`
+  in the mirror phase), and `gawk` (the no-dial assertion).
+
 ## 2026-11-01
 
 - `cargo test`: 7/7 (env allowlist; store exists/messages/delete; fork

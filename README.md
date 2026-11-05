@@ -5,12 +5,41 @@ machine **A** drive a real `claude` binary running on machine **B**: stdio
 relay + session-store projection + MCP, in Rust. Built to validate splitting
 OpenCode's `claude-agent` provider across two machines.
 
-> Not yet distributed — no installation instructions yet. Clone the repo and
-> use the dev shell (`nix develop`) or a Rust toolchain.
+> Packaging is nix-first: `nix build` produces the binaries, the static
+> release artifacts and both OCI images. See [Packaging](#packaging) below.
 
 Vocabulary: [CONTEXT.md](CONTEXT.md) · Protocol reference:
 [docs/PROTOCOL.md](docs/PROTOCOL.md) · Decisions: [docs/adr/](docs/adr/) ·
 Verification log: [docs/VERIFIED.md](docs/VERIFIED.md)
+
+## Packaging
+
+Everything is built by the flake (fenix-pinned Rust toolchain, nixpkgs
+`dockerTools` for the images) — there is no `Dockerfile` and no in-image
+`apt`/`npm`/`curl | bash` step.
+
+| Output | What it is |
+| --- | --- |
+| `nix build` (`.default` / `.#stub`) | native `stub-server` + `stub-client`; `cargo test` runs in the build |
+| `.#stub-static` | static musl `stub-server` + `stub-client` (the release artifact) |
+| `.#stub-client-windows` | `stub-client.exe` cross-built for `x86_64-pc-windows-gnu` |
+| `.#docker-server` / `.#docker-client` | OCI images (`docker load < result`) |
+| `nix flake check` | `cargo test` + shellcheck |
+
+```bash
+nix build                          # native binaries in ./result/bin
+nix build .#stub-static            # static musl binaries
+nix build .#stub-client-windows    # stub-client.exe
+
+scripts/nix-docker-load.sh         # build + docker load both images
+scripts/run-e2e-docker.sh          # in-container suite against those images
+```
+
+CI (`.github/workflows/`) runs `nix flake check` plus the native and
+docker e2e suites on every push/PR. Tagging `v*` publishes a GitHub release
+with the static binaries (`x86_64-linux`, `aarch64-linux`), the Windows
+`.exe`, and pushes both images to `ghcr.io/<owner>/zonepair-{server,client}`.
+
 
 ## Quickstart (mock claude)
 
@@ -123,5 +152,5 @@ mock/                    mock claude (transcript-persisting), store verifier, wi
 driver/sdk-driver.mjs    SDK-side protocol driver used by all e2e suites
 driver/mini-mcp-server.mjs  zero-dependency stdio MCP server for the lab proof
 scripts/                 e2e runners, mirror-sync phase, no-dial assertion
-docker/                  Dockerfile (server/client targets), entrypoint, mcp.json
+docker/                  container entrypoint + mcp.json (images built by nix; no Dockerfile)
 ```

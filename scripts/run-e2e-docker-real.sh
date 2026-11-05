@@ -25,7 +25,7 @@ if [ -n "${ANTHROPIC_MODEL:-}" ]; then
   export ANTHROPIC_MODEL
 fi
 
-docker compose build b a
+"$ROOT/scripts/nix-docker-load.sh"
 # Boot machine B with the real claude binary as the served command.
 B_CLAUDE_CMD="claude" docker compose up -d b
 trap 'docker compose down -v --remove-orphans' EXIT
