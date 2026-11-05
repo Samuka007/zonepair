@@ -3,6 +3,29 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-06 (part 2) — no entrypoint, packaged mock
+
+- `stub-server` now falls back to the environment for every option
+  (`STORE`, `CLAUDE_CMD`, `LOG_DIR`, `HTTP_LISTEN`, `HTTP_TOKEN`); a flag always
+  wins and an empty value counts as unset. The server image therefore runs the
+  bare binary (`Cmd = ["stub-server"]`) and `docker/server-entrypoint.sh` is
+  deleted. The entrypoint's silent "fall back to the mock claude" is gone: the
+  image defaults to the real `claude` it bundles.
+- smoke (native binary): env fallbacks picked up; `--store` beat `STORE`; both
+  an empty `CLAUDE_CMD` and a bare environment resolved to `claude` /
+  `$HOME/.claude` / `./stub-logs`.
+- `.#mock`: `mock/` is a derivation (scripts at `/opt/mock`, plus `claude-mock`
+  and `seed-store` wrappers with a pinned python3); both images consume it, so
+  the mock is content-addressed instead of a loose in-image file.
+- store seeding is no longer an image side effect — it is test data, so
+  `run-e2e-docker.sh` runs `seed-store "$STORE"` in container `b` first.
+- `scripts/run-e2e-docker.sh`: **PASS** (mock pinned via `B_CLAUDE_CMD=claude-mock`,
+  basic / mcp / 3 parallel / store RPC / mirror sync / no-dial).
+- `scripts/run-e2e-native.sh`: PASS.
+- image config check: `Entrypoint=null Cmd=["stub-server"]`, `Env` carries
+  `STORE/LOG_DIR/HTTP_LISTEN/HOME`; `claude-mock`, `seed-store`, `stub-server`
+  all resolve on PATH in both images.
+
 ## 2026-11-06
 
 - nix packaging: the flake now builds every artifact — `.#stub` (native;

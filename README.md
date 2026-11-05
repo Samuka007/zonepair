@@ -23,6 +23,7 @@ Everything is built by the flake (fenix-pinned Rust toolchain, nixpkgs
 | `nix build` (`.default` / `.#stub`) | native `stub-server` + `stub-client`; `cargo test` runs in the build |
 | `.#stub-static` | static musl `stub-server` + `stub-client` (the release artifact) |
 | `.#stub-client-windows` | `stub-client.exe` cross-built for `x86_64-pc-windows-gnu` |
+| `.#mock` | mock `claude` + store fixtures as commands (`claude-mock`, `seed-store`) |
 | `.#docker-server` / `.#docker-client` | OCI images (`docker load < result`) |
 | `nix flake check` | `cargo test` + shellcheck |
 
@@ -135,7 +136,9 @@ The login flow is intentionally not replaced — anything involving local
 | `MODELS_YML` | `run-e2e-docker-real.sh` | models.yml path (default `~/.omp/agent/models.yml`) |
 | `CLAUDE_STUB_ENDPOINT` | stub-client, drivers | `host:port` of the stub-server |
 | `STORE_HTTP_PORT` | real e2e | ws-line-v1 listener port on B (default 7789) |
-| `B_CLAUDE_CMD` | docker mock suite | command the server spawns as "claude" (default `claude`) |
+| `B_CLAUDE_CMD` | docker suites (host) | feeds compose's `CLAUDE_CMD` interpolation; mock suite sets `claude-mock` |
+| `CLAUDE_CMD` | stub-server | command the server spawns as "claude" (default `claude`) |
+| `STORE` / `LOG_DIR` / `HTTP_LISTEN` / `HTTP_TOKEN` | stub-server | same names as the flags; see [PROTOCOL.md](docs/PROTOCOL.md#server-configuration) |
 | `CLAUDE_CONFIG_DIR` | stub-client sync, opencode | A-local mirror of B's store |
 | `CLAUDE_STUB_MIRROR` | stub-client | `1` enables push/pull sync around each relayed turn |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` | real e2e | provider wiring (set via wiring-env.py, not by hand) |
@@ -152,5 +155,5 @@ mock/                    mock claude (transcript-persisting), store verifier, wi
 driver/sdk-driver.mjs    SDK-side protocol driver used by all e2e suites
 driver/mini-mcp-server.mjs  zero-dependency stdio MCP server for the lab proof
 scripts/                 e2e runners, mirror-sync phase, no-dial assertion
-docker/                  container entrypoint + mcp.json (images built by nix; no Dockerfile)
+docker/                  mcp.json for the MCP lab proof (images are built by nix)
 ```

@@ -145,19 +145,30 @@
             };
           };
 
+          # --- mock `claude` + store fixtures, as a nix package --------------
+          # Scripts land at /opt/mock (the e2e helpers keep their hardcoded
+          # paths); `claude-mock` and `seed-store` are wrappers with a pinned
+          # python3, so the image does not depend on a `python3` on PATH.
+          mock = pkgs.runCommand "zonepair-mock" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+            mkdir -p $out/bin $out/opt/mock
+            cp -r ${./mock}/. $out/opt/mock/
+            chmod +x $out/opt/mock/*.mjs
+            for s in claude-mock seed-store; do
+              makeWrapper ${pkgs.python3}/bin/python3 "$out/bin/$s" \
+                --add-flags "$out/opt/mock/$s.py"
+            done
+          '';
+
           # --- payload trees laid out at /opt inside the images -------------
           serverOpt = pkgs.runCommand "zonepair-server-opt" { } ''
-            mkdir -p $out/opt/mock $out/opt/scripts
-            cp -r ${./mock}/. $out/opt/mock/
+            mkdir -p $out/opt/scripts
             cp ${./docker/mcp.json} $out/opt/mcp.json
-            cp ${./docker/server-entrypoint.sh} $out/opt/server-entrypoint.sh
             cp ${./scripts/assert-nodial.sh} $out/opt/scripts/assert-nodial.sh
-            chmod +x $out/opt/server-entrypoint.sh $out/opt/scripts/assert-nodial.sh
+            chmod +x $out/opt/scripts/assert-nodial.sh
           '';
 
           clientOpt = pkgs.runCommand "zonepair-client-opt" { } ''
-            mkdir -p $out/opt/mock $out/opt/driver $out/opt/scripts
-            cp -r ${./mock}/. $out/opt/mock/
+            mkdir -p $out/opt/driver $out/opt/scripts
             cp -r ${./driver}/. $out/opt/driver/
             cp -r ${./scripts}/. $out/opt/scripts/
             chmod +x $out/opt/driver/*.mjs $out/opt/scripts/*.sh
@@ -187,6 +198,7 @@
             tag = "latest";
             contents = dockerBase ++ [
               stub
+              mock
               pkgs.bashInteractive
               pkgs.coreutils
               pkgs.gawk
@@ -197,21 +209,24 @@
               pkgs.dockerTools.caCertificates
             ];
             extraCommands = ''
-              mkdir -p usr/local/bin root tmp
+              mkdir -p usr/local/bin root tmp opt
               chmod 1777 tmp
-              cp -r ${serverOpt}/opt opt
-              chmod +x opt/server-entrypoint.sh opt/scripts/assert-nodial.sh
+              cp -r ${serverOpt}/opt/. opt/
               ln -s ${stub}/bin/stub-server usr/local/bin/stub-server
             '';
+            # No entrypoint script: stub-server reads STORE / LOG_DIR /
+            # HTTP_LISTEN / CLAUDE_CMD from the environment itself, so the image
+            # command is just the binary. CLAUDE_CMD is left unset => the real
+            # `claude` bundled above; the mock suite overrides it.
             config = {
               Env = [
                 "STORE=/data/claude"
                 "LOG_DIR=/data/logs"
-                "CLAUDE_MOCK=/opt/mock/claude-mock.py"
+                "HTTP_LISTEN=0.0.0.0:7789"
                 "HOME=/root"
                 "LANG=C.UTF-8"
               ];
-              Entrypoint = [ "/opt/server-entrypoint.sh" ];
+              Cmd = [ "stub-server" ];
               ExposedPorts = {
                 "7788/tcp" = { };
                 "7789/tcp" = { };
@@ -229,6 +244,7 @@
             tag = "latest";
             contents = dockerBase ++ [
               stub
+              mock
               pkgs.bashInteractive
               pkgs.coreutils
               pkgs.python3
@@ -236,10 +252,9 @@
               pkgs.dockerTools.caCertificates
             ];
             extraCommands = ''
-              mkdir -p usr/local/bin work tmp
+              mkdir -p usr/local/bin work tmp opt
               chmod 1777 tmp
-              cp -r ${clientOpt}/opt opt
-              chmod +x opt/driver/*.mjs opt/scripts/*.sh
+              cp -r ${clientOpt}/opt/. opt/
               ln -s ${stub}/bin/stub-client usr/local/bin/stub-client
             '';
             config = {
@@ -256,6 +271,7 @@
         {
           inherit
             stub
+            mock
             stub-static
             stub-client-windows
             docker-server
@@ -305,7 +321,7 @@
               nativeBuildInputs = [ (pkgsFor system).shellcheck ];
             }
             ''
-              shellcheck -x ${./scripts}/*.sh ${./docker/server-entrypoint.sh}
+              shellcheck -x ${./scripts}/*.sh
               touch $out
             '';
       });
