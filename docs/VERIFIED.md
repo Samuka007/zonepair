@@ -3,6 +3,87 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-06 (part 3) — opencode v2 as the A-side harness
+
+- Facts, from primary sources (an earlier claim of mine that nixpkgs lacked
+  opencode v2 came from querying the *stable* registry instead of unstable —
+  wrong):
+  - nixpkgs never shipped 2.2.3/2.2.4; it went `2.2.1 -> 2.2.5`
+    (NixOS/nixpkgs@9c4790e0e8d4, 2026-11-01).
+  - the "Claude Agent" provider — the thing that makes `OPENCODE_CLAUDE_PATH`
+    mean anything — exists from **v2.2.3** (`specs/v2/claude-agent-provider.md`
+    is present at tags v2.2.3+ and 404 at v2.2.0/1/2).
+  - nixpkgs' 2.2.5 recorded **one platform-agnostic `node_modules` hash taken
+    from a Darwin build**, so every x86_64-linux build failed the fixed-output
+    check (and thus never reached cache.nixos.org). Upstream fixed it
+    per-platform in NixOS/nixpkgs@c399e1b7fb90 (2026-11-04), not yet in
+    nixos-unstable (HEAD 2026-11-03).
+  - no community cache carries it: opencode's CI pushes nothing (no
+    cachix/garnix/attic in any workflow, no `nixConfig`); `opencode.cachix.org`
+    exists but is a personal cache (dominicnunez) without our paths;
+    nix-community / numtide / nixpkgs-wayland all 404; FlakeHub says the flake
+    does not exist.
+- Local patch (`opencodeHashFix` overlay): override the `node_modules`
+  `outputHash` with the linux value. It reproduces upstream's fix exactly —
+  same drv (`jaj1m6ab5ng…`) and same output (`s5v1spmji7…`) as the fix commit.
+- `nix build .#opencode` → `opencode v2.2.5`, and
+  `opencode auth login claude-agent` answers "Connected to Claude Agent", so
+  the provider is really present.
+- nixpkgs input bumped 2026-10-30 → 2026-11-03; `nix flake check` green and
+  `scripts/run-e2e-docker.sh` PASS again on the newer nixpkgs (claude-code
+  2.1.312 → 2.1.317), no-dial included.
+- README + ADR-0004 now state the v2 ≥ 2.2.3 requirement and that
+  `OPENCODE_CLAUDE_PATH` is read by the opencode *server*.
+
+## 2026-11-06 (part 2) — no entrypoint, packaged mock
+
+- `stub-server` now falls back to the environment for every option
+  (`STORE`, `CLAUDE_CMD`, `LOG_DIR`, `HTTP_LISTEN`, `HTTP_TOKEN`); a flag always
+  wins and an empty value counts as unset. The server image therefore runs the
+  bare binary (`Cmd = ["stub-server"]`) and `docker/server-entrypoint.sh` is
+  deleted. The entrypoint's silent "fall back to the mock claude" is gone: the
+  image defaults to the real `claude` it bundles.
+- smoke (native binary): env fallbacks picked up; `--store` beat `STORE`; both
+  an empty `CLAUDE_CMD` and a bare environment resolved to `claude` /
+  `$HOME/.claude` / `./stub-logs`.
+- `.#mock`: `mock/` is a derivation (scripts at `/opt/mock`, plus `claude-mock`
+  and `seed-store` wrappers with a pinned python3); both images consume it, so
+  the mock is content-addressed instead of a loose in-image file.
+- store seeding is no longer an image side effect — it is test data, so
+  `run-e2e-docker.sh` runs `seed-store "$STORE"` in container `b` first.
+- `scripts/run-e2e-docker.sh`: **PASS** (mock pinned via `B_CLAUDE_CMD=claude-mock`,
+  basic / mcp / 3 parallel / store RPC / mirror sync / no-dial).
+- `scripts/run-e2e-native.sh`: PASS.
+- image config check: `Entrypoint=null Cmd=["stub-server"]`, `Env` carries
+  `STORE/LOG_DIR/HTTP_LISTEN/HOME`; `claude-mock`, `seed-store`, `stub-server`
+  all resolve on PATH in both images.
+
+## 2026-11-06
+
+- nix packaging: the flake now builds every artifact — `.#stub` (native;
+  `cargo test` runs in `checkPhase`), `.#stub-static` (musl), 
+  `.#stub-client-windows` (`x86_64-pc-windows-gnu`), `.#docker-server` /
+  `.#docker-client` (nixpkgs `dockerTools.buildLayeredImage`). The Dockerfile
+  is gone; `docker/` keeps only the entrypoint and `mcp.json`.
+- `nix build .#stub`: 6/6 store tests pass (`fork` prefix/fresh-ids/chain,
+  uuid-less skip, merge union/idempotency, exists/messages/delete, list).
+- `nix build .#stub-static`: `static-pie linked` (`ldd`: "statically linked"),
+  0 rust-toolchain references. `.#stub-client-windows`: PE32+ x86-64 `.exe`.
+- `nix flake check`: green — `checks.default` (cargo test) + `checks.shellcheck`.
+- `scripts/run-e2e-docker.sh` against the nix-built images: **PASS** — basic
+  turn, MCP round trip, 3 concurrent clients, store RPC
+  (exists/messages/fork/delete), mirror sync (ADR-0004), and the no-dial
+  assertion inside container `b` (pid 1, :7788).
+- `nix develop -c cargo build` + `scripts/run-e2e-native.sh`: PASS (the
+  native suite CI runs).
+- image size after dropping rustc's baked sysroot path
+  (`--remap-path-prefix`; without it the whole fenix toolchain rode along):
+  server 1.15 GB -> 241 MB, client 1.05 GB -> 146 MB.
+- image layer fixups the e2e forced, now in the flake: `fakeNss`
+  (`/etc/nsswitch.conf` — service names did not resolve), `usrBinEnv` +
+  `binSh` (`#!/usr/bin/env bash` did not resolve), writable `/tmp` (`mktemp`
+  in the mirror phase), and `gawk` (the no-dial assertion).
+
 ## 2026-11-01
 
 - `cargo test`: 7/7 (env allowlist; store exists/messages/delete; fork

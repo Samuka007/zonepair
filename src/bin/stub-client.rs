@@ -16,6 +16,17 @@
 //! deleteSession — they read CLAUDE_CONFIG_DIR from the process environment)
 //! work on the mirrored copy while the real store lives on B. Zero opencode
 //! changes.
+//!
+//! `setup` subcommand: one-shot A-side configuration. Writes the four
+//! variables the relay needs into the **opencode server's** environment (via
+//! `opencode service set env`, so a background daemon sees them too), creates
+//! the mirror and bootstraps it, then runs `doctor`.
+//!
+//! `doctor` subcommand: preflight. Checks the endpoint + store RPC, that the
+//! opencode server actually points `OPENCODE_CLAUDE_PATH` at a stub-client,
+//! that opencode is new enough for the Claude Agent provider, and that the
+//! mirror is present. Fails loudly instead of letting opencode silently fall
+//! back to a local, directly-dialing `claude`.
 
 use anyhow::{bail, Context, Result};
 use claude_io_stub::{envf, proto};
@@ -39,6 +50,12 @@ async fn main() -> Result<()> {
     }
     if args.first().map(String::as_str) == Some("sync") {
         return sync_cli().await;
+    }
+    if args.first().map(String::as_str) == Some("setup") {
+        return setup_cli(&args[1..]).await;
+    }
+    if args.first().map(String::as_str) == Some("doctor") {
+        return doctor_cli(&args[1..]).await;
     }
     transport().await
 }
@@ -111,7 +128,11 @@ fn mirror_root() -> Result<std::path::PathBuf> {
 /// `<mirror>/projects/lab/<session>.jsonl` (the SDK's helpers search all
 /// project dirs, so the flat lab dir is enough).
 async fn sync_once(endpoint: &str) -> Result<(usize, usize)> {
-    let mirror = mirror_root()?;
+    sync_once_to(endpoint, &mirror_root()?).await
+}
+
+async fn sync_once_to(endpoint: &str, mirror: &std::path::Path) -> Result<(usize, usize)> {
+    let mirror = mirror.to_path_buf();
     let mut pushed = 0usize;
 
     // ---- push ---------------------------------------------------------------
@@ -298,6 +319,232 @@ async fn transport() -> Result<()> {
     // open. Tokio's Stdin worker is a blocking-pool thread parked in read(),
     // and a normal runtime shutdown would join it forever.
     std::process::exit(0);
+}
+
+// ---- setup / doctor ---------------------------------------------------------
+
+const DEFAULT_ENDPOINT: &str = "127.0.0.1:7788";
+/// First opencode release with the Claude Agent provider.
+const OPENCODE_MIN: (u64, u64, u64) = (2, 2, 3);
+
+fn mirror_default() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/.claude-remote-mirror")
+}
+
+/// The variables the relay needs in the **opencode server's** environment.
+/// A shell export is not enough: opencode usually runs as a daemon that never
+/// sees the caller's shell, and stub-client is spawned by that server.
+fn desired_server_env(endpoint: &str, mirror: &str, exe: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("CLAUDE_STUB_ENDPOINT", endpoint.to_string()),
+        ("OPENCODE_CLAUDE_PATH", exe.to_string()),
+        ("CLAUDE_CONFIG_DIR", mirror.to_string()),
+        ("CLAUDE_STUB_MIRROR", "1".to_string()),
+    ]
+}
+
+/// Parse `opencode --version` ("opencode v2.2.5") into a comparable triple.
+fn parse_version(out: &str) -> Option<(u64, u64, u64)> {
+    let token = out.split_whitespace().find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()) || t.starts_with('v'))?;
+    let mut parts = token.trim_start_matches('v').split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+async fn setup_cli(args: &[String]) -> Result<()> {
+    let mut endpoint = std::env::var("CLAUDE_STUB_ENDPOINT")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+    let mut mirror = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(mirror_default);
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--endpoint" => {
+                endpoint = args.get(i + 1).context("--endpoint needs HOST:PORT")?.clone();
+                i += 2;
+            }
+            "--mirror" => {
+                mirror = args.get(i + 1).context("--mirror needs DIR")?.clone();
+                i += 2;
+            }
+            other => bail!("unknown setup arg {other}; usage: setup [--endpoint HOST:PORT] [--mirror DIR]"),
+        }
+    }
+
+    let exe = std::env::current_exe()
+        .context("resolving our own path")?
+        .canonicalize()
+        .context("canonicalizing our own path")?;
+    let exe = exe.to_string_lossy().to_string();
+
+    std::fs::create_dir_all(&mirror)
+        .with_context(|| format!("creating mirror dir {mirror}"))?;
+
+    // Prefer the server env: it is what the daemon-spawned stub-client inherits.
+    // `service set env NAME VALUE` — not a subcommand, the key is the literal
+    // string "env" and the variable name is the second argument.
+    match std::process::Command::new("opencode")
+        .args(["service", "set", "env", "PROBE", "PROBE"])
+        .output()
+    {
+        Ok(_) => {
+            for (key, value) in desired_server_env(&endpoint, &mirror, &exe) {
+                let status = std::process::Command::new("opencode")
+                    .args(["service", "set", "env", key, &value])
+                    .status()
+                    .with_context(|| format!("opencode service set env {key}"))?;
+                if !status.success() {
+                    bail!("opencode service set env {key} failed ({status}); set it by hand");
+                }
+                println!("opencode server env {key}={value}");
+            }
+            // Drop the probe, then restart so a running daemon picks the new
+            // environment up.
+            let _ = std::process::Command::new("opencode")
+                .args(["service", "unset", "env", "PROBE"])
+                .status();
+            let _ = std::process::Command::new("opencode")
+                .args(["service", "restart"])
+                .status();
+        }
+        Err(_) => {
+            println!("opencode not on PATH — export these in whatever starts it:");
+            for (key, value) in desired_server_env(&endpoint, &mirror, &exe) {
+                println!("  export {key}={value}");
+            }
+        }
+    }
+
+    // Bootstrap the mirror so opencode's in-process store helpers start from
+    // B's real state rather than an empty directory.
+    match sync_once_to(&endpoint, std::path::Path::new(&mirror)).await {
+        Ok((pushed, pulled)) => println!("mirror bootstrap: pushed {pushed} line(s), pulled {pulled} line(s)"),
+        Err(e) => println!("mirror bootstrap skipped: {e:#}"),
+    }
+
+    println!();
+    doctor_cli(&[
+        "--endpoint".to_string(),
+        endpoint.clone(),
+        "--mirror".to_string(),
+        mirror.clone(),
+    ])
+    .await
+}
+
+async fn doctor_cli(args: &[String]) -> Result<()> {
+    let mut endpoint = std::env::var("CLAUDE_STUB_ENDPOINT")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+    if let Some(pos) = args.iter().position(|a| a == "--endpoint") {
+        endpoint = args.get(pos + 1).context("--endpoint needs HOST:PORT")?.clone();
+    }
+    let explicit_mirror = args
+        .iter()
+        .position(|a| a == "--mirror")
+        .map(|pos| args.get(pos + 1).context("--mirror needs DIR").cloned())
+        .transpose()?;
+
+    let mut failures = 0usize;
+    let warn = |msg: String| println!("  WARN  {msg}");
+    let mut bad = |msg: String| {
+        println!("  FAIL  {msg}");
+        failures += 1;
+    };
+
+    println!("stub-client doctor");
+
+    // 1. the endpoint answers session RPC at all
+    match sess_rpc(&endpoint, &json!({"id": 1, "op": "list"})).await {
+        Ok(v) => {
+            let n = v.get("sessions").and_then(Value::as_array).map_or(0, Vec::len);
+            println!("  ok    {endpoint} reachable ({n} session(s) in B's store)");
+        }
+        Err(e) => bad(format!("{endpoint} unreachable: {e:#}")),
+    }
+
+    // 2. the opencode server must point the provider at a stub-client.
+    //    This is the silent-degradation check: with the variable missing,
+    //    opencode just runs a local `claude` that dials Anthropic directly.
+    match std::process::Command::new("opencode")
+        .args(["service", "get", "env", "OPENCODE_CLAUDE_PATH"])
+        .output()
+    {
+        Ok(out) => {
+            let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if value.is_empty() {
+                bad("opencode server has no OPENCODE_CLAUDE_PATH — opencode would run a local claude directly, not through the stub".to_string());
+            } else if !value.contains("stub-client") {
+                bad(format!("OPENCODE_CLAUDE_PATH={value} does not look like stub-client"));
+            } else {
+                println!("  ok    opencode server OPENCODE_CLAUDE_PATH={value}");
+                if value != std::env::current_exe().unwrap_or_default().to_string_lossy() {
+                    // Not fatal: a different build/path is legitimate.
+                    println!("        (this binary is {})", std::env::current_exe().unwrap_or_default().display());
+                }
+            }
+        }
+        Err(_) => warn("opencode not on PATH — cannot verify the server env".to_string()),
+    }
+
+    // 3. opencode new enough for the Claude Agent provider
+    match std::process::Command::new("opencode").arg("--version").output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            match parse_version(&text) {
+                Some(v) if v >= OPENCODE_MIN => println!("  ok    opencode {text}"),
+                Some(v) => bad(format!(
+                    "opencode {}.{}.{} < {}.{}.{} — the Claude Agent provider (and OPENCODE_CLAUDE_PATH) needs >= {}.{}.{}",
+                    v.0, v.1, v.2, OPENCODE_MIN.0, OPENCODE_MIN.1, OPENCODE_MIN.2,
+                    OPENCODE_MIN.0, OPENCODE_MIN.1, OPENCODE_MIN.2
+                )),
+                None => warn(format!("could not parse opencode version from {text:?}")),
+            }
+        }
+        Err(_) => warn("opencode not on PATH — version unchecked".to_string()),
+    }
+
+    // 4. mirror present and non-empty, otherwise store helpers start blank.
+    //    The authoritative value is the opencode server's CLAUDE_CONFIG_DIR
+    //    (that is the process whose helpers read it), falling back to this
+    //    shell's.
+    let server_mirror = std::process::Command::new("opencode")
+        .args(["service", "get", "env", "CLAUDE_CONFIG_DIR"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    match explicit_mirror
+        .or(server_mirror)
+        .or_else(|| std::env::var("CLAUDE_CONFIG_DIR").ok().filter(|s| !s.is_empty()))
+    {
+        Some(dir) => {
+            let path = std::path::Path::new(&dir);
+            let files = std::fs::read_dir(path)
+                .map(|rd| rd.filter_map(|e| e.ok()).count())
+                .unwrap_or(0);
+            if files == 0 {
+                warn(format!("mirror {dir} is empty — run `stub-client sync` once"));
+            } else {
+                println!("  ok    mirror {dir} ({files} entr(y|ies))");
+            }
+        }
+        None => warn("no CLAUDE_CONFIG_DIR anywhere — opencode's store helpers would use the real ~/.claude".to_string()),
+    }
+
+    if failures > 0 {
+        bail!("doctor found {failures} problem(s)");
+    }
+    println!("doctor: all checks passed");
+    Ok(())
 }
 
 async fn sess_cli(args: &[String]) -> Result<()> {

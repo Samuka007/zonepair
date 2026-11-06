@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # upload release assets
+  packages: write # push images to ghcr.io
+
+jobs:
+  check:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - run: nix flake check -L
+
+  static-binaries:
+    name: static binaries (${{ matrix.system }})
+    needs: [check]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - run: nix build -L .#stub-static
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          for b in stub-server stub-client; do
+            cp -L "result/bin/$b" "dist/$b-${{ matrix.system }}"
+          done
+          file dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static-${{ matrix.system }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows-client:
+    name: client .exe (x86_64-windows)
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - run: nix build -L .#stub-client-windows
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp -L result/bin/stub-client.exe dist/stub-client-x86_64-windows.exe
+          file dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-client
+          path: dist/*
+          if-no-files-found: error
+
+  docker-images:
+    name: docker images -> ghcr.io
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build, tag and push
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          for img in docker-server docker-client; do
+            nix build ".#$img" -o "result-$img"
+            docker load < "result-$img"
+          done
+          for name in server client; do
+            ref="ghcr.io/$owner/zonepair-$name"
+            docker tag "claude-io-stub-$name:latest" "$ref:$version"
+            docker tag "claude-io-stub-$name:latest" "$ref:latest"
+            docker push "$ref:$version"
+            docker push "$ref:latest"
+          done
+
+  release:
+    name: publish GitHub release
+    needs: [static-binaries, windows-client]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

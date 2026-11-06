@@ -4,6 +4,22 @@ Design decisions and their rationale live in `docs/adr/`; the vocabulary in
 `CONTEXT.md`. This file is the technical reference: wire formats, store
 format, and the traps we hit so you don't have to.
 
+## Server configuration
+
+`stub-server` takes flags, and each flag has an environment fallback so a
+container image can run the bare binary (`Cmd = ["stub-server"]`) with no
+wrapper/entrypoint script. A flag always wins over the environment; an empty
+value counts as unset.
+
+| Option | Env fallback | Default |
+| --- | --- | --- |
+| `--listen H:P` | — | `0.0.0.0:7788` |
+| `--http-listen H:P` | `HTTP_LISTEN` | off |
+| `--http-token V` | `HTTP_TOKEN` | off |
+| `--store DIR` | `STORE`, then `CLAUDE_CONFIG_DIR` | `$HOME/.claude` |
+| `--claude "CMD ARG ..."` | `CLAUDE_CMD` | `claude` |
+| `--log-dir DIR` | `LOG_DIR` | `./stub-logs` |
+
 ## Connection dispatch
 
 Connection type is chosen by the first line the client sends.
@@ -97,8 +113,14 @@ the RPC surface exists so machine A never touches B's filesystem.
 
 ## Build/deploy traps
 
-* Build images with `rust:1-slim-bookworm`: rolling `rust:1-slim` is trixie,
-  whose binaries need GLIBC_2.39 that the bookworm runtime lacks — ld.so only
-  warns on weak symbol versions, then the server hangs half-started.
 * The mock docker suite pins `B_CLAUDE_CMD` explicitly: `compose run`
   recreates `b` and re-evaluates interpolation with empty host vars.
+* A nix `dockerTools` image is not a base image. It ships no
+  `/etc/nsswitch.conf` (glibc then cannot use DNS — the client could not
+  resolve service `b`), no `/usr/bin/env` and no `/bin/sh` (so
+  `#!/usr/bin/env bash` scripts fail to exec), and no writable `/tmp`
+  (`mktemp` fails). The flake adds `fakeNss`, `usrBinEnv`, `binSh` and a 1777
+  `/tmp`; `gawk` is needed by `assert-nodial.sh`.
+* rustc bakes its own sysroot path into std panic locations, which drags the
+  whole fenix toolchain into the binary's closure (1.15 GB images). The build
+  remaps it away with `--remap-path-prefix=<toolchain>=/rustc`.

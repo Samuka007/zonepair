@@ -1,21 +1,22 @@
+# Local e2e for the docker suites. The images are built by nix, not by docker:
+# run `scripts/nix-docker-load.sh` first to load the flake's `docker-server` /
+# `docker-client` outputs into the local daemon.
 services:
   b:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      target: server
+    image: claude-io-stub-server:latest
     environment:
       CLAUDE_CMD: ${B_CLAUDE_CMD:-}
     ports:
       - "127.0.0.1:7789:7789"
     volumes:
+      # The session store (also claude's CLAUDE_CONFIG_DIR) ...
       - stub-data:/data
+      # ... and a persistent HOME, so a one-time
+      # `docker compose exec -it b claude auth login` survives `up`/`down`.
+      - b-home:/root
 
   a:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      target: client
+    image: claude-io-stub-client:latest
     environment:
       CLAUDE_STUB_ENDPOINT: b:7788
     depends_on:
@@ -23,3 +24,4 @@ services:
 
 volumes:
   stub-data:
+  b-home:

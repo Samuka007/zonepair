@@ -28,12 +28,16 @@ struct Cfg {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Each option has an environment fallback so the binary can run straight
+    // from a container image with no wrapper script; an explicit flag always
+    // wins over the environment. An empty value counts as unset.
+    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
     let mut listen = "0.0.0.0:7788".to_string();
-    let mut http_listen = Option::<String>::None;
-    let mut http_token = Option::<String>::None;
-    let mut store = std::env::var("CLAUDE_CONFIG_DIR").ok();
-    let mut claude = "claude".to_string();
-    let mut log_dir: Option<PathBuf> = None;
+    let mut http_listen = env("HTTP_LISTEN");
+    let mut http_token = env("HTTP_TOKEN");
+    let mut store = env("STORE").or_else(|| env("CLAUDE_CONFIG_DIR"));
+    let mut claude = env("CLAUDE_CMD").unwrap_or_else(|| "claude".to_string());
+    let mut log_dir: Option<PathBuf> = env("LOG_DIR").map(PathBuf::from);
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -44,7 +48,7 @@ async fn main() -> Result<()> {
             "--store" => store = Some(args.next().context("--store needs DIR")?),
             "--claude" => claude = args.next().context("--claude needs \"CMD [ARG ...]\"")?,
             "--log-dir" => log_dir = Some(PathBuf::from(args.next().context("--log-dir needs DIR")?)),
-            other => bail!("unknown arg {other}; usage: stub-server [--listen H:P] [--store DIR] [--claude \"CMD [ARG ...]\"] [--log-dir DIR]"),
+            other => bail!("unknown arg {other}; usage: stub-server [--listen H:P] [--store DIR] [--claude \"CMD [ARG ...]\"] [--log-dir DIR] [--http-listen H:P] [--http-token VALUE]; unset options fall back to env STORE / CLAUDE_CMD / LOG_DIR / HTTP_LISTEN / HTTP_TOKEN"),
         }
     }
 
