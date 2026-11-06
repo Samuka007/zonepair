@@ -9,7 +9,11 @@ services:
     ports:
       - "127.0.0.1:7789:7789"
     volumes:
+      # The session store (also claude's CLAUDE_CONFIG_DIR) ...
       - stub-data:/data
+      # ... and a persistent HOME, so a one-time
+      # `docker compose exec -it b claude auth login` survives `up`/`down`.
+      - b-home:/root
 
   a:
     image: claude-io-stub-client:latest
@@ -20,3 +24,4 @@ services:
 
 volumes:
   stub-data:
+  b-home:

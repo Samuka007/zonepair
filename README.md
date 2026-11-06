@@ -86,6 +86,22 @@ real JSONL session landing in B's store, **fork of the real store + `--resume`
 of the forked session reproducing the parent's marker**, and cleanup +
 no-dial on B.
 
+### Server login (machine B)
+
+The server image ships the real `claude` but no credentials, and there are two
+ways to give it some:
+
+* **Env wiring** — the reproducible one, and what the real e2e does: pass
+  `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` (plus `ANTHROPIC_MODEL` when the
+  gateway needs it) into the container. No interactive step, works headless.
+* **Subscription login** — one-time
+  `docker compose exec -it b claude auth login`. `compose.yaml` gives `b` a
+  `b-home:/root` volume for exactly this, so the login survives `up`/`down`;
+  without that volume it dies with the container.
+
+Sessions persist separately and already: the server pins the child's
+`CLAUDE_CONFIG_DIR` to the store (`/data/claude`, on the `stub-data` volume).
+
 ## MCP lab proof (tool runs on A)
 
 ```bash
@@ -110,21 +126,35 @@ stub-client sess fork session_aaa u-aaa-2   # pretty JSON, exit 2 on rpc error
 
 ## Hooking into OpenCode (zero patch)
 
-Stock opencode, no source changes (mechanism: ADR-0004). Requires **opencode
-v2 ≥ 2.2.3**: that is where the "Claude Agent" provider lands — the thing that
-runs your `claude` through Anthropic's Claude Agent SDK and exposes the
-`OPENCODE_CLAUDE_PATH` knob. v1 has no such provider, so `OPENCODE_CLAUDE_PATH`
-means nothing there. The knob is read by the opencode **server** (export it, or
-`opencode service set env OPENCODE_CLAUDE_PATH /usr/local/bin/stub-client`), and
-`claude` on A must be ≥ 2.1.248 and signed in. On machine A:
+Stock opencode, no source changes (mechanism: ADR-0004).
+
+**Requirements**: opencode **v2 ≥ 2.2.3** — that is where the "Claude Agent"
+provider lands, and v1 has no such provider, so `OPENCODE_CLAUDE_PATH` means
+nothing there. `claude` on B must be ≥ 2.1.248 (opencode passes SDK options
+older builds reject).
+
+**Install** — the client is one static binary; that is the whole install:
 
 ```bash
-export CLAUDE_STUB_ENDPOINT=b:7788
-export OPENCODE_CLAUDE_PATH=/usr/local/bin/stub-client   # what the SDK spawns
-export CLAUDE_CONFIG_DIR="$HOME/.claude-remote-mirror"   # A-local store mirror
-export CLAUDE_STUB_MIRROR=1                              # sync around each turn
-stub-client sync                                         # one-time bootstrap
+nix build .#stub-static                                  # or the release asset
+install -m755 result/bin/stub-client ~/.local/bin/stub-client
 ```
+
+**Configure** — these variables are read by the opencode **server**, and the
+stub-client it spawns inherits the server's environment. So set them through
+opencode rather than your shell: the server is often started by its own daemon,
+which never sees your exports.
+
+```bash
+opencode service set env OPENCODE_CLAUDE_PATH "$HOME/.local/bin/stub-client"
+opencode service set env CLAUDE_STUB_ENDPOINT  b:7788
+opencode service set env CLAUDE_CONFIG_DIR     "$HOME/.claude-remote-mirror"
+opencode service set env CLAUDE_STUB_MIRROR    1
+stub-client sync                                         # one-time mirror bootstrap
+```
+
+Then `opencode auth login claude-agent` (or `/connect`) records *which* login
+method you chose; the actual Claude login is claude's own, on B.
 
 opencode's in-process Agent SDK store helpers (`sessionExists` / `fork` /
 `remove`) read `CLAUDE_CONFIG_DIR` from the process environment, so they run

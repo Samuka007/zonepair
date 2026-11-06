@@ -270,6 +270,7 @@
             contents = dockerBase ++ [
               stub
               mock
+              opencode
               pkgs.bashInteractive
               pkgs.coreutils
               pkgs.python3
