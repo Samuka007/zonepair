@@ -24,6 +24,7 @@ Everything is built by the flake (fenix-pinned Rust toolchain, nixpkgs
 | `.#stub-static` | static musl `stub-server` + `stub-client` (the release artifact) |
 | `.#stub-client-windows` | `stub-client.exe` cross-built for `x86_64-pc-windows-gnu` |
 | `.#mock` | mock `claude` + store fixtures as commands (`claude-mock`, `seed-store`) |
+| `.#opencode` | A-side harness (`opencode` 2.2.5, carrying the local hash patch) |
 | `.#docker-server` / `.#docker-client` | OCI images (`docker load < result`) |
 | `nix flake check` | `cargo test` + shellcheck |
 
@@ -109,7 +110,13 @@ stub-client sess fork session_aaa u-aaa-2   # pretty JSON, exit 2 on rpc error
 
 ## Hooking into OpenCode (zero patch)
 
-Stock opencode, no source changes (mechanism: ADR-0004). On machine A:
+Stock opencode, no source changes (mechanism: ADR-0004). Requires **opencode
+v2 ≥ 2.2.3**: that is where the "Claude Agent" provider lands — the thing that
+runs your `claude` through Anthropic's Claude Agent SDK and exposes the
+`OPENCODE_CLAUDE_PATH` knob. v1 has no such provider, so `OPENCODE_CLAUDE_PATH`
+means nothing there. The knob is read by the opencode **server** (export it, or
+`opencode service set env OPENCODE_CLAUDE_PATH /usr/local/bin/stub-client`), and
+`claude` on A must be ≥ 2.1.248 and signed in. On machine A:
 
 ```bash
 export CLAUDE_STUB_ENDPOINT=b:7788

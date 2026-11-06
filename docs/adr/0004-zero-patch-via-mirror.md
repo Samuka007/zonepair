@@ -12,7 +12,9 @@ without it being B:
 
 - Machine A exports `CLAUDE_CONFIG_DIR=<mirror>`; opencode's in-process SDK
   helpers read and fork real files — in the mirror.
-- `OPENCODE_CLAUDE_PATH=stub-client` (an existing official knob): the
+- `OPENCODE_CLAUDE_PATH=stub-client` (the official knob, but only from
+  opencode v2 ≥ 2.2.3's "Claude Agent" provider, and it is read by the
+  opencode *server*, not the spawned process): the
   spawned client pushes the mirror's new sessions to B before the turn and
   pulls B's new messages into the mirror after it (`CLAUDE_STUB_MIRROR=1`),
   or does a full round trip on demand via `stub-client sync`.

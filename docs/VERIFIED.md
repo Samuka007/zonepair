@@ -3,6 +3,38 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-06 (part 3) — opencode v2 as the A-side harness
+
+- Facts, from primary sources (an earlier claim of mine that nixpkgs lacked
+  opencode v2 came from querying the *stable* registry instead of unstable —
+  wrong):
+  - nixpkgs never shipped 2.2.3/2.2.4; it went `2.2.1 -> 2.2.5`
+    (NixOS/nixpkgs@9c4790e0e8d4, 2026-11-01).
+  - the "Claude Agent" provider — the thing that makes `OPENCODE_CLAUDE_PATH`
+    mean anything — exists from **v2.2.3** (`specs/v2/claude-agent-provider.md`
+    is present at tags v2.2.3+ and 404 at v2.2.0/1/2).
+  - nixpkgs' 2.2.5 recorded **one platform-agnostic `node_modules` hash taken
+    from a Darwin build**, so every x86_64-linux build failed the fixed-output
+    check (and thus never reached cache.nixos.org). Upstream fixed it
+    per-platform in NixOS/nixpkgs@c399e1b7fb90 (2026-11-04), not yet in
+    nixos-unstable (HEAD 2026-11-03).
+  - no community cache carries it: opencode's CI pushes nothing (no
+    cachix/garnix/attic in any workflow, no `nixConfig`); `opencode.cachix.org`
+    exists but is a personal cache (dominicnunez) without our paths;
+    nix-community / numtide / nixpkgs-wayland all 404; FlakeHub says the flake
+    does not exist.
+- Local patch (`opencodeHashFix` overlay): override the `node_modules`
+  `outputHash` with the linux value. It reproduces upstream's fix exactly —
+  same drv (`jaj1m6ab5ng…`) and same output (`s5v1spmji7…`) as the fix commit.
+- `nix build .#opencode` → `opencode v2.2.5`, and
+  `opencode auth login claude-agent` answers "Connected to Claude Agent", so
+  the provider is really present.
+- nixpkgs input bumped 2026-10-30 → 2026-11-03; `nix flake check` green and
+  `scripts/run-e2e-docker.sh` PASS again on the newer nixpkgs (claude-code
+  2.1.312 → 2.1.317), no-dial included.
+- README + ADR-0004 now state the v2 ≥ 2.2.3 requirement and that
+  `OPENCODE_CLAUDE_PATH` is read by the opencode *server*.
+
 ## 2026-11-06 (part 2) — no entrypoint, packaged mock
 
 - `stub-server` now falls back to the environment for every option

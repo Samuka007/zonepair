@@ -24,6 +24,24 @@
       ];
       eachSystem = lib.genAttrs systems;
 
+      # Temporary: nixpkgs' opencode 2.2.5 records ONE platform-agnostic
+      # node_modules hash (taken from a Darwin build), so every x86_64-linux
+      # build trips the fixed-output check and the output never reaches the
+      # binary cache. Upstream fixes this per-platform in
+      # NixOS/nixpkgs@c399e1b7fb90 ("opencode: fix hash"); applying that commit's
+      # linux hash locally produces the identical derivation. Drop this overlay
+      # once our nixpkgs input contains that commit.
+      opencodeHashFix = _: prev: {
+        opencode = prev.opencode.overrideAttrs (old: {
+          node_modules = old.node_modules.overrideAttrs (
+            _:
+            lib.optionalAttrs prev.stdenv.hostPlatform.isx86_64 {
+              outputHash = "sha256-prx9dX7kUvs/E3zopkaPk5LXh3xJAy5sZeum/W8L7cA=";
+            }
+          );
+        });
+      };
+
       # claude-code carries an unfree license; permit just that package so the
       # server image can bundle it without a blanket allowUnfree.
       pkgsFor =
@@ -31,6 +49,7 @@
         import nixpkgs {
           inherit system;
           config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "claude-code" ];
+          overlays = [ opencodeHashFix ];
         };
 
       pname = "zonepair";
@@ -94,6 +113,12 @@
         system:
         let
           pkgs = pkgsFor system;
+
+          # A-side harness: the Claude Agent provider (and the
+          # OPENCODE_CLAUDE_PATH knob the lab relies on) needs opencode >= 2.2.3.
+          # See opencodeHashFix for the 2.2.5 build patch.
+          opencode = pkgs.opencode;
+
           tcHost = hostToolchain system;
           tcStatic = toolchainWith system muslTarget.${system};
           tcWindows = toolchainWith system "x86_64-pc-windows-gnu";
@@ -272,6 +297,7 @@
           inherit
             stub
             mock
+            opencode
             stub-static
             stub-client-windows
             docker-server
@@ -290,6 +316,7 @@
           default = pkgs.mkShell {
             packages = [
               (hostToolchain system)
+              pkgs.opencode
               pkgs.rust-analyzer
               pkgs.python3
               pkgs.nodejs
