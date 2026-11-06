@@ -8,7 +8,7 @@ OpenCode's `claude-agent` provider across two machines.
 > Packaging is nix-first: `nix build` produces the binaries, the static
 > release artifacts and both OCI images. See [Packaging](#packaging) below.
 
-Vocabulary: [CONTEXT.md](CONTEXT.md) · Protocol reference:
+Vocabulary: [GLOSSARY.md](GLOSSARY.md) · Protocol reference:
 [docs/PROTOCOL.md](docs/PROTOCOL.md) · Decisions: [docs/adr/](docs/adr/) ·
 Verification log: [docs/VERIFIED.md](docs/VERIFIED.md)
 
