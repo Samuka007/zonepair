@@ -20,3 +20,15 @@ The five canonical roles, each label string equal to its name (`needs-triage`, `
 ### Domain docs
 
 Single-context: `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
+
+## Testing
+
+- Tests are Rust: unit tests beside the code, integration tests in `tests/`.
+  `nix flake check -L` runs everything that runs natively.
+- Mocks (`claude-mock`, the MCP helper) and protocol drivers are Rust binaries
+  in this workspace — see ADR-0006.
+- Do **not** add bash/python/node test files. bash may start containers and
+  exec the Rust harness; it must not contain assertions.
+- Container e2e: build/loads the images, then execs the same Rust harness
+  inside them (see `scripts/run-e2e-docker.sh`).
+
