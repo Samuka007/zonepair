@@ -10,7 +10,7 @@
 //! `ZONEPAIR_EXTERNAL_URL=http://…`: drive an already-running server instead of
 //! spawning one (host-against-container).
 
-use claude_io_stub::client;
+use claude_io_stub::{client, wiring};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -150,14 +150,22 @@ async fn wait_ready(base: &client::Base) {
 
 /// Open a stdio stream for a mock claude session.
 async fn open_session(base: &client::Base, session: &str) -> client::Stdio {
+    stdio_for(base, &["--session-id", session]).await
+}
+
+/// Open a stdio stream with explicit claude argv. The hello header carries the
+/// allowlisted env (`envf::collect()`), so provider wiring rides the same
+/// handshake.
+async fn stdio_for(base: &client::Base, argv: &[&str]) -> client::Stdio {
+    let token = std::env::var("CLAUDE_STUB_TOKEN").ok().filter(|v| !v.is_empty());
     client::open_stdio(
         base,
         &json!({
-            "argv": ["--session-id", session],
-            "env": {},
+            "argv": argv,
+            "env": claude_io_stub::envf::collect(),
             "cwd": std::env::temp_dir(),
         }),
-        None,
+        token.as_deref(),
     )
     .await
     .expect("open stdio")
@@ -247,23 +255,27 @@ fn established_rows() -> Vec<(u16, String)> {
 
 /// ADR-0001, enforced: the server process must own no established socket that
 /// it did not accept on its listen port.
-fn assert_no_dial(server: &Server) {
-    let Some(child) = &server.child else {
-        eprintln!("  note: external server — no-dial not attributable, skipped");
-        return;
-    };
-    let inodes = socket_inodes(child.id());
+fn assert_no_dial_for(child_id: u32, port: u16) {
+    let inodes = socket_inodes(child_id);
     assert!(!inodes.is_empty(), "server has no open fds");
     let offenders: Vec<u16> = established_rows()
         .into_iter()
         .filter(|(_, inode)| inodes.contains(inode))
         .map(|(port, _)| port)
-        .filter(|port| *port != server.port)
+        .filter(|own| *own != port)
         .collect();
     assert!(
         offenders.is_empty(),
         "server holds established connection(s) on {offenders:?} — an outbound dial"
     );
+}
+
+fn assert_no_dial(server: &Server) {
+    let Some(child) = &server.child else {
+        eprintln!("  note: external server — no-dial not attributable, skipped");
+        return;
+    };
+    assert_no_dial_for(child.id(), server.port);
 }
 
 // ---- the suite -----------------------------------------------------------------
@@ -330,7 +342,6 @@ async fn tool_round_trip(base: &client::Base) {
             }
         }
         if v.get("type").and_then(Value::as_str) == Some("result") {
-            saw_result = true;
             break;
         }
     }
@@ -465,7 +476,196 @@ async fn server_never_dials(server: &Server) {
     assert_no_dial(server);
 }
 
+// ---- real model (credentials from the omp credential store) -------------------
+
+/// Real claude on B, wired to a real provider through the same stdio-v1
+/// semantics: marker echo, fork of the real store, and fork/resume reproducing
+/// the marker across processes.
+async fn real_model_suite(provider: &str) {
+    let claude_bin =
+        std::env::var("ZONEPAIR_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
+    let wiring = match wiring::for_provider(provider, None) {
+        Ok(w) => w,
+        Err(e) => fail(&format!("wiring for {provider}: {e:#}")),
+    };
+    eprintln!(
+        "wiring: provider={provider} base={} model={}",
+        wiring.base_url,
+        wiring.model.clone().unwrap_or_default()
+    );
+    // envf allowlists ANTHROPIC_* / DISABLE_* — the wiring rides the hello
+    // header to the claude child on B.
+    std::env::set_var("ANTHROPIC_BASE_URL", &wiring.base_url);
+    std::env::set_var("ANTHROPIC_AUTH_TOKEN", &wiring.auth_token);
+    if let Some(m) = &wiring.model {
+        std::env::set_var("ANTHROPIC_MODEL", m);
+    }
+    std::env::set_var("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+    std::env::set_var("DISABLE_AUTOUPDATER", "1");
+
+    let port = free_port();
+    let workdir = tempdir();
+    let store = workdir.join("store");
+    let logs = workdir.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let child = Command::new(server_bin())
+        .arg("--listen")
+        .arg(format!("127.0.0.1:{port}"))
+        .arg("--store")
+        .arg(&store)
+        .arg("--claude")
+        .arg(&claude_bin)
+        .arg("--log-dir")
+        .arg(&logs)
+        .spawn()
+        .expect("spawn stub-server");
+    let base = client::parse_base(&format!("ws://127.0.0.1:{port}")).unwrap();
+    wait_ready(&base).await;
+
+    let session = format!("real-{}", free_port());
+    let marker = format!("zp-marker-{}-{port}", std::process::id());
+    let base_argv = [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--input-format",
+        "stream-json",
+    ];
+
+    // ---- turn 1: marker echo through A -> B -> provider --------------------
+    let mut stream = stdio_for(&base, &base_argv).await;
+    stream
+        .send_line(&json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{
+                "type": "text",
+                "text": format!("Reply with exactly this phrase and nothing else: {marker}"),
+            }]},
+        }))
+        .await
+        .unwrap();
+    stream.send_eof().await.unwrap();
+
+    let mut init_session: Option<String> = None;
+    let mut reply = String::new();
+    loop {
+        let Some(line) = stream.next_line().await.expect("frame (turn 1)") else {
+            fail("closed before result (turn 1)");
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            if line.starts_with("[claude-code:") { continue }
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) == Some("system")
+            && v.get("subtype").and_then(Value::as_str) == Some("init")
+        {
+            init_session = v.get("session_id").and_then(Value::as_str).map(str::to_string);
+        }
+        if v.get("type").and_then(Value::as_str) == Some("assistant") {
+            if let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) {
+                for b in blocks {
+                    if let Some(t) = b.get("text").and_then(Value::as_str) {
+                        reply.push_str(t);
+                    }
+                }
+            }
+        }
+        if v.get("type").and_then(Value::as_str) == Some("result") {
+            if v.get("subtype").and_then(Value::as_str) != Some("success") {
+                fail(&format!("turn 1 result: {}", v.to_string().chars().take(200).collect::<String>()));
+            }
+            break;
+        }
+    }
+    assert!(
+        reply.contains(&marker),
+        "model reply does not contain the marker: {:?}",
+        reply.chars().take(200).collect::<String>()
+    );
+    let session = init_session
+        .or(Some(session))
+        .expect("no session id (turn 1)");
+    eprintln!(
+        "turn 1 ok: session={session} reply={}",
+        reply.chars().take(120).collect::<String>()
+    );
+    drop(stream);
+
+    // ---- the marker landed in B's store ------------------------------------
+    let messages = client::store_messages(&base, None, &session).await.expect("store messages");
+    assert!(messages.len() >= 2, "real session did not land in B's store");
+    let first_user = messages
+        .iter()
+        .find(|m| m.get("type").and_then(Value::as_str) == Some("user"))
+        .and_then(|m| m.get("uuid"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| fail("no user uuid in B's store"))
+        .to_string();
+
+    // ---- fork the real store ----------------------------------------------
+    let (forked, _pairs, _fm) = client::store_fork(&base, None, &session, &first_user)
+        .await
+        .expect("fork real session");
+
+    // ---- resume the FORKED session in a fresh claude process ---------------
+    let mut resume_argv: Vec<&str> = base_argv.to_vec();
+    resume_argv.push("--resume");
+    resume_argv.push(forked.as_str());
+    let mut stream2 = stdio_for(&base, &resume_argv).await;
+    stream2
+        .send_line(&json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{
+                "type": "text",
+                "text": "Earlier I asked you to reply with exactly one marker phrase. Reply with only that phrase now.",
+            }]},
+        }))
+        .await
+        .unwrap();
+    stream2.send_eof().await.unwrap();
+    let mut resumed_reply = String::new();
+    loop {
+        let Some(line) = stream2.next_line().await.expect("frame (resume)") else {
+            fail("closed before result (resume)");
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        if v.get("type").and_then(Value::as_str) == Some("assistant") {
+            if let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) {
+                for b in blocks {
+                    if let Some(t) = b.get("text").and_then(Value::as_str) {
+                        resumed_reply.push_str(t);
+                    }
+                }
+            }
+        }
+        if v.get("type").and_then(Value::as_str) == Some("result") {
+            break;
+        }
+    }
+    assert!(
+        resumed_reply.contains(&marker),
+        "forked resume lost the marker: {:?}",
+        resumed_reply.chars().take(200).collect::<String>()
+    );
+    eprintln!(
+        "resume ok: fork={forked} reply={}",
+        resumed_reply.chars().take(120).collect::<String>()
+    );
+    drop(stream2);
+
+    assert!(client::store_delete(&base, None, &forked).await.unwrap(), "delete forked session");
+    assert_no_dial_for(child.id(), port);
+}
+
 async fn run_suite() {
+    if let Some(provider) = std::env::var("ZONEPAIR_WIRING").ok().filter(|v| !v.is_empty()) {
+        eprintln!("real-model suite: provider={provider}");
+        real_model_suite(&provider).await;
+        eprintln!("REAL-MODEL E2E PASS (provider={provider})");
+        return;
+    }
+
     let server = spawn_or_external().await;
     basic_turn(&server.base).await;
     tool_round_trip(&server.base).await;

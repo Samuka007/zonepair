@@ -291,9 +291,8 @@
             packages = [
               (hostToolchain system)
               pkgs.opencode
+              pkgs.claude-code
               pkgs.rust-analyzer
-              pkgs.python3
-              pkgs.nodejs
               pkgs.jq
               pkgs.iproute2
               pkgs.shellcheck
