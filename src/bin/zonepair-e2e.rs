@@ -71,7 +71,9 @@ impl Drop for Server {
             let _ = child.kill();
             let _ = child.wait();
         }
-        let _ = std::fs::remove_dir_all(&self.workdir);
+        if std::env::var("ZONEPAIR_KEEP").is_err() {
+            let _ = std::fs::remove_dir_all(&self.workdir);
+        }
     }
 }
 
@@ -313,8 +315,10 @@ async fn tool_round_trip(base: &client::Base) {
     let mut saw_tool_use = false;
     let mut ack_text = String::new();
     let mut saw_result = false;
+    let mut received: Vec<String> = Vec::new();
     loop {
         let Some(line) = stream.next_line().await.expect("frame") else { break };
+        received.push(line.clone());
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
         if v.get("type").and_then(Value::as_str) == Some("assistant") {
             for block in v["message"]["content"].as_array().cloned().unwrap_or_default() {
@@ -342,10 +346,17 @@ async fn tool_round_trip(base: &client::Base) {
             }
         }
         if v.get("type").and_then(Value::as_str) == Some("result") {
+            saw_result = true;
             break;
         }
     }
     stream.send_eof().await.unwrap();
+    if !saw_result {
+        eprintln!("tool flow received {} frame(s):", received.len());
+        for r in &received {
+            eprintln!("  | {}", r.chars().take(160).collect::<String>());
+        }
+    }
     assert!(saw_tool_use, "no tool_use");
     assert_eq!(ack_text, "TOOL OK echo-payload-x", "tool result did not round trip");
     assert!(saw_result, "no result after tool round trip");
