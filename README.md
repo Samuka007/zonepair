@@ -122,6 +122,8 @@ tools: extend `TOOLS` in `mini-mcp-server.mjs`; more servers: one
 ```bash
 export CLAUDE_STUB_ENDPOINT=127.0.0.2:7788
 stub-client sess fork session_aaa u-aaa-2   # pretty JSON, exit 2 on rpc error
+stub-client doctor                          # preflight: endpoint, opencode
+                                            # env, version, mirror
 ```
 
 ## Hooking into OpenCode (zero patch)
@@ -152,6 +154,20 @@ opencode service set env CLAUDE_CONFIG_DIR     "$HOME/.claude-remote-mirror"
 opencode service set env CLAUDE_STUB_MIRROR    1
 stub-client sync                                         # one-time mirror bootstrap
 ```
+
+All four of those are what `stub-client setup` writes, so in practice:
+
+```bash
+stub-client setup --endpoint b:7788      # writes the server env, creates +
+                                         # bootstraps the mirror, then doctor
+stub-client doctor                       # preflight, any time
+```
+
+`doctor` exists because the failure mode is silent: if the opencode server
+never sees `OPENCODE_CLAUDE_PATH`, opencode happily runs a local `claude` that
+talks to Anthropic directly — no relay, no error. It checks the endpoint's
+store RPC, that the **server's** `OPENCODE_CLAUDE_PATH` really points at a
+stub-client, that opencode is ≥ 2.2.3, and that the mirror is populated.
 
 Then `opencode auth login claude-agent` (or `/connect`) records *which* login
 method you chose; the actual Claude login is claude's own, on B.
