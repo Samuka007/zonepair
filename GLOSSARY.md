@@ -47,6 +47,7 @@ _Avoid_: transport mode, wire mode (they name the stub-client mode, not the surf
 The raw-TCP listener surface: a hello line, an ack line, then the protocol's
 lines or byte stream directly on the socket. Has no request boundaries, so no
 gateway can route, authenticate or observe it.
+_Superseded_: removed by ADR-0005 — the only carrier is `ws-line-v1`.
 _Avoid_: raw listener, plain TCP, tcp mode
 
 **ws-line-v1**:

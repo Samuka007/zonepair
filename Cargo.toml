@@ -22,5 +22,17 @@ path = "src/bin/stub-server.rs"
 name = "stub-client"
 path = "src/bin/stub-client.rs"
 
+[[bin]]
+name = "claude-mock"
+path = "src/bin/claude-mock.rs"
+
+[[bin]]
+name = "mcp-helper"
+path = "src/bin/mcp-helper.rs"
+
+[[bin]]
+name = "zonepair-e2e"
+path = "src/bin/zonepair-e2e.rs"
+
 [profile.release]
 strip = true
