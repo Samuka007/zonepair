@@ -6,7 +6,9 @@ relay + session-store projection + MCP, in Rust. Built to validate splitting
 OpenCode's `claude-agent` provider across two machines.
 
 > Not yet distributed — no installation instructions yet. Clone the repo and
-> use the dev shell (`nix develop`) or a Rust toolchain.
+> use the dev shell (`nix develop`) or a Rust toolchain. Reproducible builds:
+> `nix build` (linux binaries) · `nix build .#windows-exe` (cross-compiled
+> `.exe`), both via crane.
 
 Vocabulary: [CONTEXT.md](CONTEXT.md) · Protocol reference:
 [docs/PROTOCOL.md](docs/PROTOCOL.md) · Decisions: [docs/adr/](docs/adr/) ·
