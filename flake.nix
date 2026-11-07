@@ -185,33 +185,15 @@
           # --- client .exe cross-built for windows-gnu (crane) ---------------
           stub-client-windows = stubClientWindows system;
 
-          # --- mock `claude` + store fixtures, as a nix package --------------
-          # Scripts land at /opt/mock (the e2e helpers keep their hardcoded
-          # paths); `claude-mock` and `seed-store` are wrappers with a pinned
-          # python3, so the image does not depend on a `python3` on PATH.
-          mock = pkgs.runCommand "zonepair-mock" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
-            mkdir -p $out/bin $out/opt/mock
-            cp -r ${./mock}/. $out/opt/mock/
-            chmod +x $out/opt/mock/*.mjs
-            for s in claude-mock seed-store; do
-              makeWrapper ${pkgs.python3}/bin/python3 "$out/bin/$s" \
-                --add-flags "$out/opt/mock/$s.py"
-            done
-          '';
+          # The mock `claude` and MCP helper are Rust binaries from the same
+          # workspace (ADR-0006): they ship inside the images with the stub
+          # bins, so there is no separate mock package and no python/node in
+          # any image.
 
           # --- payload trees laid out at /opt inside the images -------------
           serverOpt = pkgs.runCommand "zonepair-server-opt" { } ''
-            mkdir -p $out/opt/scripts
+            mkdir -p $out/opt
             cp ${./docker/mcp.json} $out/opt/mcp.json
-            cp ${./scripts/assert-nodial.sh} $out/opt/scripts/assert-nodial.sh
-            chmod +x $out/opt/scripts/assert-nodial.sh
-          '';
-
-          clientOpt = pkgs.runCommand "zonepair-client-opt" { } ''
-            mkdir -p $out/opt/driver $out/opt/scripts
-            cp -r ${./driver}/. $out/opt/driver/
-            cp -r ${./scripts}/. $out/opt/scripts/
-            chmod +x $out/opt/driver/*.mjs $out/opt/scripts/*.sh
           '';
 
           # --- OCI images built by nixpkgs dockerTools (no Dockerfile) -------
@@ -238,12 +220,8 @@
             tag = "latest";
             contents = dockerBase ++ [
               stub
-              mock
               pkgs.bashInteractive
               pkgs.coreutils
-              pkgs.gawk
-              pkgs.python3
-              pkgs.iproute2
               pkgs.curl
               pkgs.claude-code
               pkgs.dockerTools.caCertificates
@@ -253,22 +231,22 @@
               chmod 1777 tmp
               cp -r ${serverOpt}/opt/. opt/
               ln -s ${stub}/bin/stub-server usr/local/bin/stub-server
+              ln -s ${stub}/bin/stub-client usr/local/bin/stub-client
             '';
             # No entrypoint script: stub-server reads STORE / LOG_DIR /
-            # HTTP_LISTEN / CLAUDE_CMD from the environment itself, so the image
+            # LISTEN / CLAUDE_CMD from the environment itself, so the image
             # command is just the binary. CLAUDE_CMD is left unset => the real
             # `claude` bundled above; the mock suite overrides it.
             config = {
               Env = [
+                "LISTEN=0.0.0.0:7789"
                 "STORE=/data/claude"
                 "LOG_DIR=/data/logs"
-                "HTTP_LISTEN=0.0.0.0:7789"
                 "HOME=/root"
                 "LANG=C.UTF-8"
               ];
               Cmd = [ "stub-server" ];
               ExposedPorts = {
-                "7788/tcp" = { };
                 "7789/tcp" = { };
               };
               Volumes = {
@@ -284,27 +262,23 @@
             tag = "latest";
             contents = dockerBase ++ [
               stub
-              mock
               opencode
               pkgs.bashInteractive
               pkgs.coreutils
-              pkgs.python3
-              pkgs.nodejs
               pkgs.dockerTools.caCertificates
             ];
             extraCommands = ''
-              mkdir -p usr/local/bin work tmp opt
+              mkdir -p usr/local/bin work tmp
               chmod 1777 tmp
-              cp -r ${clientOpt}/opt/. opt/
               ln -s ${stub}/bin/stub-client usr/local/bin/stub-client
             '';
             config = {
-              Env = [ "LANG=C.UTF-8" ];
-              WorkingDir = "/work";
-              Cmd = [
-                "bash"
-                "/opt/scripts/run-e2e-inner.sh"
+              Env = [
+                "CLAUDE_STUB_URL=ws://b:7789"
+                "LANG=C.UTF-8"
               ];
+              WorkingDir = "/work";
+              Cmd = [ "opencode" ];
               Labels = imageMeta;
             };
           };
@@ -312,7 +286,6 @@
         {
           inherit
             stub
-            mock
             opencode
             stub-static
             stub-client-windows
@@ -333,9 +306,8 @@
             packages = [
               (hostToolchain system)
               pkgs.opencode
+              pkgs.claude-code
               pkgs.rust-analyzer
-              pkgs.python3
-              pkgs.nodejs
               pkgs.jq
               pkgs.iproute2
               pkgs.shellcheck

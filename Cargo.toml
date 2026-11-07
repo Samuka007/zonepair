@@ -8,6 +8,7 @@ description = "C/S stub pair: relay OpenCode's Claude Agent SDK stdio/control ch
 anyhow = "1"
 axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "process", "sync", "time", "signal"] }
@@ -21,6 +22,18 @@ path = "src/bin/stub-server.rs"
 [[bin]]
 name = "stub-client"
 path = "src/bin/stub-client.rs"
+
+[[bin]]
+name = "claude-mock"
+path = "src/bin/claude-mock.rs"
+
+[[bin]]
+name = "mcp-helper"
+path = "src/bin/mcp-helper.rs"
+
+[[bin]]
+name = "zonepair-e2e"
+path = "src/bin/zonepair-e2e.rs"
 
 [profile.release]
 strip = true

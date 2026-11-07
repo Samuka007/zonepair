@@ -1,7 +1,7 @@
 # Protocol & implementation reference
 
 Design decisions and their rationale live in `docs/adr/`; the vocabulary in
-`CONTEXT.md`. This file is the technical reference: wire formats, store
+`GLOSSARY.md`. This file is the technical reference: wire formats, store
 format, and the traps we hit so you don't have to.
 
 ## Server configuration

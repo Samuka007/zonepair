@@ -3,6 +3,26 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-06 (part 4) — real-model e2e is Rust, wired from the omp credential store
+
+- `agent.db` (`~/.omp/agent/agent.db`) is the live credential store, not the
+  legacy `models.yml` scrape: `auth_credentials` carries `deepseek` as
+  `{"key": …, "source": "login"}` (and a kimi-code OAuth entry). `src/wiring.rs`
+  reads it read-only (URI mode + busy timeout) and maps provider →
+  Anthropic-compatible endpoint + model (deepseek →
+  `api.deepseek.com/anthropic` + `deepseek-flash`).
+- `zonepair-e2e` gained the real-model suite (gated by `ZONEPAIR_WIRING=deepseek`,
+  real claude via `ZONEPAIR_CLAUDE_BIN`): marker echo through A → WS → B →
+  claude → provider, real session landing in B's store, fork of the real
+  session, resume of the fork in a fresh claude process reproducing the marker,
+  delete, no-dial. **PASS** with claude 2.1.317 + deepseek-flash, ~45 s wall.
+- A direct probe (claude one-shot, bypassing the stub) was run first to
+  separate credential/model failures from transport failures.
+- rusqlite (bundled) joins Cargo for the credential read; devShell carries
+  `pkgs.claude-code` (2.1.317) so the real claude is on PATH.
+- ADR-0006's "wiring-env.py's job moves into the Rust harness" is now done —
+  the models.yml line-scrape is dead code.
+
 ## 2026-11-06 (part 3) — opencode v2 as the A-side harness
 
 - Facts, from primary sources (an earlier claim of mine that nixpkgs lacked

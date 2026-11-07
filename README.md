@@ -9,7 +9,7 @@ OpenCode's `claude-agent` provider across two machines.
 > release artifacts and both OCI images. See [Packaging](#packaging) below.
 > The windows-gnu `.exe` is cross-built with crane.
 
-Vocabulary: [CONTEXT.md](CONTEXT.md) · Protocol reference:
+Vocabulary: [GLOSSARY.md](GLOSSARY.md) · Protocol reference:
 [docs/PROTOCOL.md](docs/PROTOCOL.md) · Decisions: [docs/adr/](docs/adr/) ·
 Verification log: [docs/VERIFIED.md](docs/VERIFIED.md)
 

@@ -34,14 +34,32 @@ _Avoid_: raw mode, tcp mode
 
 **sess-v1**:
 The stateless JSON-lines RPC for the session store: exists, messages, fork,
-delete.
+delete, merge, list.
 _Avoid_: store RPC, projection RPC
+
+**carrier**:
+Which listener surface carries a protocol — `tcp-line-v1` or `ws-line-v1`.
+Protocols (stdio-v1, sess-v1) are defined independently of the carrier; a
+carrier is a choice of how those lines reach the server, not a protocol.
+_Avoid_: transport mode, wire mode (they name the stub-client mode, not the surface)
+
+**tcp-line-v1**:
+The raw-TCP listener surface: a hello line, an ack line, then the protocol's
+lines or byte stream directly on the socket. Has no request boundaries, so no
+gateway can route, authenticate or observe it.
+_Superseded_: removed by ADR-0005 — the only carrier is `ws-line-v1`.
+_Avoid_: raw listener, plain TCP, tcp mode
 
 **ws-line-v1**:
 The HTTP/WS listener surface: the store operations as plain HTTP endpoints,
 stdio-v1 re-framed as one text frame per protocol line, and the tunnel as a
 paired WS pump.
 _Avoid_: v2, http mode (it is a second listener, not a replacement)
+
+**tunnel**:
+A pre-opened, A-initiated WS that carries one MCP JSON-RPC line per frame,
+paired with a B-loopback helper so tool execution happens on A.
+_Avoid_: reverse proxy, port forward
 
 **hello header**:
 The first line a client sends: proto name plus argv/env/cwd for the child to
