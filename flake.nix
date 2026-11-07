@@ -7,6 +7,7 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -14,6 +15,7 @@
       self,
       nixpkgs,
       fenix,
+      crane,
     }:
     let
       inherit (nixpkgs) lib;
@@ -107,6 +109,42 @@
           }
           // extra
         );
+
+      # The windows-gnu cross build is the crane one (crane.lib's
+      # overrideToolchain exists precisely for this): crane drives cargo
+      # against a mingwW64 stdenv, whose cc wrapper is the cross linker.
+      # The host-side fenix toolchain must be built for the build platform,
+      # hence toolchainWith on the *host* system.
+      stubClientWindows =
+        system:
+        let
+          mingw = (pkgsFor system).pkgsCross.mingwW64;
+          craneWinLib = (crane.mkLib mingw).overrideToolchain (_: toolchainWith system "x86_64-pc-windows-gnu");
+        in
+        craneWinLib.buildPackage {
+          inherit pname version;
+          src = craneWinLib.cleanCargoSource self;
+          strictDeps = true;
+          # Cross builds have nothing to run tests on; the e2e harness needs
+          # real claude/docker and stays out of the build gate anyway.
+          doCheck = false;
+          meta = {
+            inherit description;
+            homepage = "https://github.com/Samuka007/zonepair";
+            mainProgram = "stub-client";
+            platforms = lib.platforms.windows;
+          };
+          CARGO_BUILD_TARGET = "x86_64-pc-windows-gnu";
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "x86_64-w64-mingw32-gcc";
+          cargoBuildFlags = [
+            "--bin"
+            "stub-client"
+          ];
+          # rustc's windows-gnu link line asks for -l:libpthread.a, which
+          # its self-contained dir does not ship; point the linker at
+          # mingw-w64's winpthreads.
+          NIX_LDFLAGS = "-L${mingw.windows.pthreads}/lib";
+        };
     in
     {
       packages = eachSystem (
@@ -121,7 +159,6 @@
 
           tcHost = hostToolchain system;
           tcStatic = toolchainWith system muslTarget.${system};
-          tcWindows = toolchainWith system "x86_64-pc-windows-gnu";
 
           # rustc bakes its own sysroot path into std panic locations, which
           # drags the whole toolchain into the binary's closure and into every
@@ -145,30 +182,8 @@
             extra.RUSTFLAGS = "${remap tcStatic} -C target-feature=+crt-static";
           };
 
-          # --- client .exe cross-built for windows-gnu ----------------------
-          # pkgsCross.mingwW64 makes buildRustPackage target windows-gnu; the
-          # fenix toolchain supplies the windows rust-std and the binutils come
-          # from the mingw stdenv.
-          mingw = pkgs.pkgsCross.mingwW64;
-          stub-client-windows = mkStub {
-            rustPlatform = rustPlatformFrom mingw tcWindows;
-            doCheck = false;
-            meta = {
-              mainProgram = "stub-client";
-              platforms = lib.platforms.windows;
-            };
-            extra = {
-              cargoBuildFlags = [
-                "--bin"
-                "stub-client"
-              ];
-              RUSTFLAGS = remap tcWindows;
-              # rustc's windows-gnu link line asks for -l:libpthread.a, which
-              # its self-contained dir does not ship; point the linker at
-              # mingw-w64's winpthreads.
-              NIX_LDFLAGS = "-L${mingw.windows.pthreads}/lib";
-            };
-          };
+          # --- client .exe cross-built for windows-gnu (crane) ---------------
+          stub-client-windows = stubClientWindows system;
 
           # --- mock `claude` + store fixtures, as a nix package --------------
           # Scripts land at /opt/mock (the e2e helpers keep their hardcoded

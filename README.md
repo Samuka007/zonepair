@@ -7,6 +7,7 @@ OpenCode's `claude-agent` provider across two machines.
 
 > Packaging is nix-first: `nix build` produces the binaries, the static
 > release artifacts and both OCI images. See [Packaging](#packaging) below.
+> The windows-gnu `.exe` is cross-built with crane.
 
 Vocabulary: [CONTEXT.md](CONTEXT.md) · Protocol reference:
 [docs/PROTOCOL.md](docs/PROTOCOL.md) · Decisions: [docs/adr/](docs/adr/) ·
