@@ -1,10 +1,11 @@
-{ inputs, ... }:
 {
   perSystem =
-    { pkgs, system, ... }:
-    let
-      toolchains = import ./toolchains.nix { fenix = inputs.fenix; };
-    in
+    {
+      pkgs,
+      system,
+      toolchains,
+      ...
+    }:
     {
       devShells.default = pkgs.mkShell {
         packages = [

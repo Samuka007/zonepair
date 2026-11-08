@@ -41,6 +41,10 @@
             inherit system;
             config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "claude-code" ];
           };
+          # Shared, system-scoped imports: every perSystem module gets these
+          # as module arguments instead of importing them itself.
+          _module.args.toolchains = import ./nix/toolchains.nix { fenix = inputs.fenix; };
+          _module.args.product = import ./nix/meta.nix;
         };
     };
 }

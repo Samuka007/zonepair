@@ -1,11 +1,14 @@
-{ inputs, lib, ... }:
 {
   perSystem =
-    { pkgs, system, ... }:
+    {
+      lib,
+      pkgs,
+      system,
+      product,
+      toolchains,
+      ...
+    }:
     let
-      product = import ./meta.nix;
-      toolchains = import ./toolchains.nix { fenix = inputs.fenix; };
-
       # musl static triple per host system — the portable release artifact.
       muslTarget = {
         x86_64-linux = "x86_64-unknown-linux-musl";
@@ -50,14 +53,19 @@
               "--bin"
               bin
             ]) bins;
-            postInstall = lib.concatMapStrings (bin: ''
-              rm -f $out/bin/${bin}
-            '') (lib.subtractLists bins [
-              "stub-server"
-              "stub-client"
-              "claude-mock"
-              "zonepair-e2e"
-            ]);
+            postInstall =
+              lib.concatMapStrings
+                (bin: ''
+                  rm -f $out/bin/${bin}
+                '')
+                (
+                  lib.subtractLists bins [
+                    "stub-server"
+                    "stub-client"
+                    "claude-mock"
+                    "zonepair-e2e"
+                  ]
+                );
           }
           // extra
         );
@@ -95,7 +103,7 @@
         extra.RUSTFLAGS = remap tcHost;
       };
 
-      # --- static musl release binary ---------------------------------------
+      # --- static musl release binary -----------------------------------------
       # pkgsStatic forces a musl + crt-static stdenv, so buildRustPackage
       # passes --target <musl> and links statically; the fenix toolchain
       # supplies the matching rust-std. Release ships only the two production

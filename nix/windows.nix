@@ -1,10 +1,15 @@
-{ inputs, lib, ... }:
+{ inputs, ... }:
 {
   perSystem =
-    { pkgs, system, ... }:
+    {
+      lib,
+      pkgs,
+      system,
+      product,
+      toolchains,
+      ...
+    }:
     let
-      product = import ./meta.nix;
-      toolchains = import ./toolchains.nix { fenix = inputs.fenix; };
       mingw = pkgs.pkgsCross.mingwW64;
 
       # crane.lib's overrideToolchain exists precisely for this: crane drives
