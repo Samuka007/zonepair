@@ -67,22 +67,16 @@ file-level fork verification, 3 concurrent forks, and the no-dial assertion.
 ## Real-model e2e (real claude, real provider)
 
 Boots machine B with the genuine `claude` binary and drives a real model
-backend through the relay (needs network + an API token). Credentials come
-from the environment — the same `ANTHROPIC_AUTH_TOKEN` claude itself
-consumes, so CI secrets or your shell work unchanged:
+backend through the relay (needs network + an API token). Everything
+provider-specific lives outside this repository: export the variables claude
+itself consumes, then opt in with `ZONEPAIR_REAL=1`:
 
 ```bash
+export ANTHROPIC_BASE_URL=...             # any Anthropic-compatible endpoint
 export ANTHROPIC_AUTH_TOKEN=...           # provider API key
-ZONEPAIR_WIRING=deepseek nix develop -c cargo test --test e2e
-ZONEPAIR_WIRING=zai      nix develop -c cargo test --test e2e
+export ANTHROPIC_MODEL=...                # optional
+ZONEPAIR_REAL=1 nix develop -c cargo test --test e2e
 ```
-
-The provider shorthand selects the Anthropic-compatible endpoint and model:
-
-| `ZONEPAIR_WIRING` | base URL | model |
-| --- | --- | --- |
-| `deepseek` | `https://api.deepseek.com/anthropic` | `deepseek-flash` |
-| `zai` | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3-flash` |
 
 Credentials travel only as harness env → hello header (allowlisted
 `ANTHROPIC_*`/`CLAUDE_*`) → claude child env; never written to the repo,
@@ -181,11 +175,11 @@ The login flow is intentionally not replaced — anything involving local
 | `CLAUDE_CONFIG_DIR` | stub-client sync, opencode | A-local mirror of B's store |
 | `LISTEN` / `TOKEN` / `STORE` / `LOG_DIR` / `CLAUDE_CMD` | stub-server | same names as the flags; see [PROTOCOL.md](docs/PROTOCOL.md#server-configuration) |
 | `B_CLAUDE_CMD` | docker suite (host) | feeds compose's `CLAUDE_CMD` interpolation; the script sets `/usr/local/bin/claude-mock` |
-| `ZONEPAIR_WIRING` | real-model suite | provider: `deepseek` or `zai` |
+| `ZONEPAIR_REAL` | real-model suite | `1` runs it (requires the `ANTHROPIC_*` vars) |
 | `ZONEPAIR_CLAUDE_BIN` | real-model suite | claude binary to spawn (default `claude`) |
 | `ZONEPAIR_SERVER_BIN` / `ZONEPAIR_MOCK_BIN` | zonepair-e2e | binaries to drive (cargo test sets them) |
 | `ZONEPAIR_EXTERNAL_URL` / `ZONEPAIR_KEEP` | zonepair-e2e | drive an existing server / keep the temp dir |
-| `ANTHROPIC_AUTH_TOKEN` | real-model suite | provider API key (export it; base URL/model come from the provider shorthand) |
+| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` | real-model suite | consumed by claude; set them yourself |
 
 ## Layout
 

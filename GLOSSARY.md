@@ -84,13 +84,6 @@ side=b pairs from B's own loopback (the helper claude spawns).
 _Superseded_: removed by ADR-0007 with the tunnel itself.
 _Avoid_: upstream/downstream
 
-**wiring**:
-The provider credential bundle (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN /
-optional model overrides) resolved by the real-model suite from its
-environment.
-_Avoid_: provider config, credentials (credentials are the values; wiring is
-the resolved bundle)
-
 **no-dial assertion**:
 The e2e check that the server process owns no outbound connections — the
 invariant that machine B never dials machine A.

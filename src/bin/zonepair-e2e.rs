@@ -10,7 +10,7 @@
 //! `ZONEPAIR_EXTERNAL_URL=http://…`: drive an already-running server instead of
 //! spawning one (host-against-container).
 
-use claude_io_stub::{client, wiring};
+use claude_io_stub::client;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -489,31 +489,29 @@ async fn server_never_dials(server: &Server) {
 
 // ---- real model (credentials from the environment) ---------------------------
 
-/// Real claude on B, wired to a real provider through the same stdio-v1
-/// semantics: marker echo, fork of the real store, and fork/resume reproducing
-/// the marker across processes.
+/// Real claude on B, driven through the same stdio-v1 semantics: marker echo,
+/// fork of the real store, and fork/resume reproducing the marker across
+/// processes.
 ///
-/// Opt in with `ZONEPAIR_WIRING=<provider>` and export `ANTHROPIC_AUTH_TOKEN`
-/// (the variable claude consumes); the provider shorthand only selects the
-/// endpoint and model.
-async fn real_model_suite(provider: &str) {
+/// Opt in with `ZONEPAIR_REAL=1` and export the variables claude itself
+/// consumes: `ANTHROPIC_BASE_URL` (any Anthropic-compatible endpoint),
+/// `ANTHROPIC_AUTH_TOKEN`, and optionally `ANTHROPIC_MODEL`. Provider-specific
+/// knowledge stays outside this repository.
+async fn real_model_suite() {
     let claude_bin =
         std::env::var("ZONEPAIR_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
-    let Some((base_url, model)) = wiring::endpoint_for(provider) else {
-        fail(&format!(
-            "no Anthropic-compatible endpoint known for provider {provider:?} (known: deepseek, zai)"
-        ));
-    };
-    let auth_token = std::env::var("ANTHROPIC_AUTH_TOKEN")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| fail("ANTHROPIC_AUTH_TOKEN must be exported for the real-model suite"));
-    eprintln!("real-model: provider={provider} base={base_url} model={model}");
+    for var in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"] {
+        if std::env::var(var).ok().filter(|v| !v.is_empty()).is_none() {
+            fail(&format!("{var} must be exported for the real-model suite"));
+        }
+    }
+    eprintln!(
+        "real-model: base={} model={}",
+        std::env::var("ANTHROPIC_BASE_URL").unwrap_or_default(),
+        std::env::var("ANTHROPIC_MODEL").unwrap_or_default()
+    );
     // envf allowlists ANTHROPIC_* / DISABLE_* — the wiring rides the hello
     // header to the claude child on B.
-    std::env::set_var("ANTHROPIC_BASE_URL", base_url);
-    std::env::set_var("ANTHROPIC_AUTH_TOKEN", &auth_token);
-    std::env::set_var("ANTHROPIC_MODEL", model);
     std::env::set_var("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
     std::env::set_var("DISABLE_AUTOUPDATER", "1");
 
@@ -673,10 +671,10 @@ async fn real_model_suite(provider: &str) {
 }
 
 async fn run_suite() {
-    if let Some(provider) = std::env::var("ZONEPAIR_WIRING").ok().filter(|v| !v.is_empty()) {
-        eprintln!("real-model suite: provider={provider}");
-        real_model_suite(&provider).await;
-        eprintln!("REAL-MODEL E2E PASS (provider={provider})");
+    if std::env::var("ZONEPAIR_REAL").is_ok_and(|v| v == "1") {
+        eprintln!("real-model suite");
+        real_model_suite().await;
+        eprintln!("REAL-MODEL E2E PASS");
         return;
     }
 

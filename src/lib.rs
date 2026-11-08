@@ -6,4 +6,3 @@ pub mod http;
 pub mod envf;
 pub mod proto;
 pub mod store;
-pub mod wiring;
