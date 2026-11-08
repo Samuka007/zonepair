@@ -111,8 +111,8 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - run: nix build -L ".#${{ matrix.image }}"
-      # Convert the dockerTools tarball to an OCI layout and push it as
-      # :<arch> — no daemon, layers keep their digests.
+      # Push the dockerTools tarball straight to ghcr under :<arch> — no
+      # daemon, no load hop, layer digests preserved as-is.
       - name: Push per-arch image
         env:
           PASSWORD: ${{ secrets.GITHUB_TOKEN }}
@@ -120,13 +120,12 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          # Single-image source: arch/variant come from the image config,
+          # which the native build on this runner already set correctly.
           nix shell nixpkgs#skopeo -c skopeo --insecure-policy copy \
-            --override-os linux --override-arch "${ARCH%%-*}" --override-variant v8 \
-            docker-archive:result oci-dir:img
-          tag="ghcr.io/${OWNER,,}/zonepair-${NAME}:${ARCH}"
-          nix run nixpkgs#regctl -- \
-            --host "reg=ghcr.io,user=${OWNER,,},pass=${PASSWORD},tls=enabled" \
-            image copy "ocidir://img:latest" "$tag"
+            --dest-creds "${OWNER,,}:${PASSWORD}" \
+            docker-archive:result \
+            "docker://ghcr.io/${OWNER,,}/zonepair-${NAME}:${ARCH}"
 
   publish-images:
     name: merge multi-arch index -> ghcr.io
