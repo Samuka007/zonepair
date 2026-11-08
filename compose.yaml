@@ -3,7 +3,10 @@
 # `docker-client` outputs into the local daemon.
 services:
   b:
-    image: claude-io-stub-server:latest
+    # The e2e image is the production server image plus the Rust mock claude
+    # and the e2e harness (see nix/images.nix); production deployments use
+    # claude-io-stub-server:latest.
+    image: claude-io-stub-server-test:latest
     environment:
       CLAUDE_CMD: ${B_CLAUDE_CMD:-}
     ports:

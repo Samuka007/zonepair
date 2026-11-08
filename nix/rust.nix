@@ -14,9 +14,15 @@
 
       # One Cargo build definition, reused by every target. `extra` overrides
       # buildRustPackage args per target (cargoBuildFlags, NIX_LDFLAGS, …).
+      #
+      # `bins` (optional) restricts which binaries are built AND installed —
+      # production images ship only the binaries they run, so the mock claude
+      # and the e2e harness never end up in a production artifact.
       mkStub =
         {
           rustPlatform,
+          bins ? null,
+          mainProgram ? "stub-server",
           doCheck ? true,
           meta ? { },
           extra ? { },
@@ -34,10 +40,24 @@
             cargoLock.lockFile = ../Cargo.lock;
             meta = {
               inherit (product) description homepage;
-              mainProgram = "stub-server";
+              inherit mainProgram;
               platforms = lib.platforms.linux;
             }
             // meta;
+          }
+          // lib.optionalAttrs (bins != null) {
+            cargoBuildFlags = lib.concatMap (bin: [
+              "--bin"
+              bin
+            ]) bins;
+            postInstall = lib.concatMapStrings (bin: ''
+              rm -f $out/bin/${bin}
+            '') (lib.subtractLists bins [
+              "stub-server"
+              "stub-client"
+              "claude-mock"
+              "zonepair-e2e"
+            ]);
           }
           // extra
         );
@@ -58,12 +78,34 @@
         extra.RUSTFLAGS = remap tcHost;
       };
 
+      # --- single-bin production builds ---------------------------------------
+      # Each machine ships only the binary it runs: machine B runs stub-server
+      # (the mock claude and the e2e harness are test-only and must not land in
+      # a production image), machine A runs stub-client.
+      packages.stub-server = mkStub {
+        rustPlatform = toolchains.rustPlatformFrom pkgs tcHost;
+        bins = [ "stub-server" ];
+        extra.RUSTFLAGS = remap tcHost;
+      };
+
+      packages.stub-client = mkStub {
+        rustPlatform = toolchains.rustPlatformFrom pkgs tcHost;
+        bins = [ "stub-client" ];
+        meta.mainProgram = "stub-client";
+        extra.RUSTFLAGS = remap tcHost;
+      };
+
       # --- static musl release binary ---------------------------------------
       # pkgsStatic forces a musl + crt-static stdenv, so buildRustPackage
       # passes --target <musl> and links statically; the fenix toolchain
-      # supplies the matching rust-std.
+      # supplies the matching rust-std. Release ships only the two production
+      # binaries.
       packages.stub-static = mkStub {
         rustPlatform = toolchains.rustPlatformFrom pkgs.pkgsStatic tcStatic;
+        bins = [
+          "stub-server"
+          "stub-client"
+        ];
         extra.RUSTFLAGS = "${remap tcStatic} -C target-feature=+crt-static";
       };
     };

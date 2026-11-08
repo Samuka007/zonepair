@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-for img in docker-server docker-client; do
+for img in docker-server docker-server-test docker-client; do
   nix build ".#$img" -o "result-$img"
   docker load < "result-$img"
 done

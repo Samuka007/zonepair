@@ -21,21 +21,24 @@ Everything is built by the flake (fenix-pinned Rust toolchain, nixpkgs
 
 | Output | What it is |
 | --- | --- |
-| `nix build` (`.default` / `.#stub`) | native `stub-server` + `stub-client`; `cargo test` runs in the build |
+| `nix build` (`.default` / `.#stub`) | all four bins (`stub-server`, `stub-client`, `claude-mock`, `zonepair-e2e`); `cargo test` runs in the build |
+| `.#stub-server` / `.#stub-client` | production-only packages: each ships just its one binary (no mock, no e2e harness) |
 | `.#stub-static` | static musl `stub-server` + `stub-client` (the release artifact) |
 | `.#stub-client-windows` | `stub-client.exe` cross-built for `x86_64-pc-windows-gnu` |
-| `.#mock` | mock `claude` + store fixtures as commands (`claude-mock`, `seed-store`) |
 | `.#opencode` | A-side harness (`opencode` 2.2.5, carrying the local hash patch) |
-| `.#docker-server` / `.#docker-client` | OCI images (`docker load < result`) |
+| `.#docker-server` / `.#docker-client` | production OCI images (`docker load < result`) |
+| `.#docker-server-test` | production server image + mock claude + e2e harness, for `run-e2e-docker.sh` only |
 | `nix flake check` | `cargo test` + shellcheck |
 
 ```bash
-nix build                          # native binaries in ./result/bin
+nix build                          # all bins in ./result/bin
+nix build .#stub-server            # production server binary only
+nix build .#stub-client            # production client binary only
 nix build .#stub-static            # static musl binaries
 nix build .#stub-client-windows    # stub-client.exe
 
-scripts/nix-docker-load.sh         # build + docker load both images
-scripts/run-e2e-docker.sh          # in-container suite against those images
+scripts/nix-docker-load.sh         # build + docker load all three images
+scripts/run-e2e-docker.sh          # in-container suite against the e2e image
 ```
 
 CI (`.github/workflows/`) runs `nix flake check` plus the native and
