@@ -22,15 +22,6 @@
         "aarch64-linux"
       ];
 
-      imports = [
-        ./nix/rust.nix
-        ./nix/windows.nix
-        ./nix/images.nix
-        ./nix/devshells.nix
-        ./nix/checks.nix
-        ./nix/formatter.nix
-      ];
-
       perSystem =
         { system, lib, ... }:
         {
@@ -41,10 +32,20 @@
             inherit system;
             config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "claude-code" ];
           };
-          # Shared, system-scoped imports: every perSystem module gets these
-          # as module arguments instead of importing them itself.
-          _module.args.toolchains = import ./nix/toolchains.nix { fenix = inputs.fenix; };
+          # Shared, system-scoped values, injected into every perSystem module
+          # as module arguments.
           _module.args.product = import ./nix/meta.nix;
+          _module.args.toolchains = import ./nix/toolchains.nix { fenix = inputs.fenix; };
+          _module.args.crane = inputs.crane;
+
+          imports = [
+            ./nix/rust.nix
+            ./nix/windows.nix
+            ./nix/images.nix
+            ./nix/devshells.nix
+            ./nix/checks.nix
+            ./nix/formatter.nix
+          ];
         };
     };
 }
