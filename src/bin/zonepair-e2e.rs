@@ -751,6 +751,25 @@ async fn unset_lifecycle(server: &Server) {
     let fake_bin = workdir.join("fake-opencode-bin");
     std::fs::create_dir_all(&fake_bin).unwrap();
     let state = workdir.join("service-env.txt");
+    // Resolve the client binary to an absolute path *before* any PATH
+    // override: spawn lookup uses the child env's PATH, and the branches
+    // below deliberately restrict PATH (fake opencode / no opencode at
+    // all). The docker harness runs this suite with ZONEPAIR_CLIENT_BIN
+    // unset — `stub-client` is a bare name resolved from the container's
+    // default PATH — so a bare name must be pinned here or the restricted
+    // PATH hides the binary under test itself.
+    let client_abs: String = {
+        let cb = client_bin();
+        if cb.contains('/') {
+            cb
+        } else {
+            std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
+                .map(|dir| dir.join(&cb))
+                .find(|p| p.is_file())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| cb.clone())
+        }
+    };
     let fake = fake_bin.join("opencode");
     // Args: service <set|unset|get> env KEY [VALUE]; state is one KEY=VALUE
     // per line. `service get env KEY` prints the value — the external
@@ -788,7 +807,7 @@ async fn unset_lifecycle(server: &Server) {
     }
 
     let run_unset_with_path = |path: Option<std::path::PathBuf>| -> std::process::Output {
-        let mut cmd = Command::new(client_bin());
+        let mut cmd = Command::new(&client_abs);
         cmd.arg("unset")
             .env_remove("CLAUDE_STUB_URL")
             .env_remove("CLAUDE_STUB_TOKEN");
@@ -835,7 +854,9 @@ async fn unset_lifecycle(server: &Server) {
     }
 
     // opencode absent: fallback prints one removal line per key, exit 0.
-    let out = run_unset_with_path(Some(workdir.join("empty-path")));
+    let empty_path = workdir.join("empty-path");
+    std::fs::create_dir_all(&empty_path).unwrap();
+    let out = run_unset_with_path(Some(empty_path));
     let stdout = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() {
         fail(&format!("unset fallback failed: {stdout}{}", String::from_utf8_lossy(&out.stderr)));
@@ -861,7 +882,7 @@ async fn unset_lifecycle(server: &Server) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let out = Command::new(client_bin())
+    let out = Command::new(&client_abs)
         .arg("unset")
         .env("PATH", &broken_bin)
         .env("ZONEPAIR_FAKE_OC_STATE", &state)
