@@ -112,7 +112,7 @@ Sessions persist separately and already: the server pins the child's
 ## Manual poking
 
 ```bash
-export CLAUDE_STUB_ENDPOINT=127.0.0.2:7788
+export CLAUDE_STUB_URL=ws://127.0.0.1:7789
 stub-client sess fork session_aaa u-aaa-2   # pretty JSON, exit 2 on rpc error
 stub-client doctor                          # preflight: endpoint, opencode
                                             # env, version, mirror
@@ -161,6 +161,11 @@ All four of those are what `stub-client setup` writes, so in practice:
 stub-client setup --url ws://b:7789      # writes the server env, creates +
                                          # bootstraps the mirror, then doctor
 stub-client doctor --url ws://b:7789     # preflight, any time
+stub-client unset                        # reverse: removes the server env
+                                         # (plus a leftover PROBE), restarts
+                                         # opencode; no server contact, mirror
+                                         # untouched; without opencode on PATH
+                                         # it prints the removal lines
 ```
 
 `doctor` exists because the failure mode is silent: if the opencode server

@@ -24,7 +24,7 @@ _Avoid_: daemon, relay (relay is what the pair collectively does)
 **stub-client**:
 The A-side process the SDK spawns instead of `claude`. Faces: transport
 mode (long-lived stdio relay with mirror sync), sess CLI (one-shot store
-RPC), and the setup/doctor/sync utilities.
+RPC), and the setup/doctor/sync/unset utilities.
 _Avoid_: proxy
 
 **stdio-v1**:

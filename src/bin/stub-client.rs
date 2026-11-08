@@ -51,6 +51,7 @@ async fn main() -> Result<()> {
         Some("sess") => sess_cli(&args[1..]).await,
         Some("sync") => sync_cli().await,
         Some("setup") => setup_cli(&args[1..]).await,
+        Some("unset") => unset_cli(&args[1..]).await,
         Some("doctor") => doctor_cli(&args[1..]).await,
         _ => transport(&args).await,
     }
@@ -173,6 +174,61 @@ async fn setup_cli(args: &[String]) -> Result<()> {
 
     println!();
     doctor_cli(&["--url".to_string(), url.clone(), "--mirror".to_string(), mirror.clone()]).await
+}
+
+/// Reverse of `setup` (issue #4): remove exactly the environment setup writes,
+/// plus the `PROBE` probe key a failed setup can leave behind, then restart so
+/// a running daemon stops inheriting the relay environment. Takes no `--url`
+/// and dials nothing — decommissioning B must not depend on B answering — and
+/// never chains into `doctor`, which legitimately reports the now-missing
+/// `OPENCODE_CLAUDE_PATH` as a problem. The mirror directory is user data and
+/// is read nowhere here.
+async fn unset_cli(args: &[String]) -> Result<()> {
+    if let Some(other) = args.first() {
+        bail!("unknown unset arg {other}; usage: unset");
+    }
+    // Removal targets derive from the same source of truth setup writes: a
+    // future fifth key added to `desired_server_env` is swept here for free.
+    let keys: Vec<&'static str> =
+        desired_server_env("", "", "").into_iter().map(|(k, _)| k).collect();
+
+    // Presence probe, same trick as setup: setting PROBE proves an opencode
+    // with a working `service` subcommand is on PATH. If a later removal fails
+    // midway, PROBE lingers exactly like after a failed setup — re-running
+    // unset sweeps it (removal is idempotent).
+    let probe = std::process::Command::new("opencode")
+        .args(["service", "set", "env", "PROBE", "PROBE"])
+        .output();
+    match probe {
+        Ok(_) => {
+            for key in &keys {
+                let status = std::process::Command::new("opencode")
+                    .args(["service", "unset", "env", key])
+                    .status()
+                    .with_context(|| format!("opencode service unset env {key}"))?;
+                if !status.success() {
+                    bail!("opencode service unset env {key} failed ({status}); unset it by hand");
+                }
+                println!("removed {key}");
+            }
+            let status = std::process::Command::new("opencode")
+                .args(["service", "unset", "env", "PROBE"])
+                .status()
+                .context("opencode service unset env PROBE")?;
+            if !status.success() {
+                bail!("opencode service unset env PROBE failed ({status})");
+            }
+            println!("removed PROBE");
+            let _ = std::process::Command::new("opencode").args(["service", "restart"]).status();
+        }
+        Err(_) => {
+            println!("opencode not on PATH — unset these in whatever starts it:");
+            for key in &keys {
+                println!("  unset {key}");
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn doctor_cli(args: &[String]) -> Result<()> {

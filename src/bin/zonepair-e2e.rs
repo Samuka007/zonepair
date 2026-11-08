@@ -738,6 +738,144 @@ async fn doctor_accepts_url(server: &Server) {
     eprintln!("doctor --url ok");
 }
 
+/// `stub-client unset` (issue #4): removes exactly the environment `setup`
+/// writes plus a leftover `PROBE`, is idempotent, contacts no server, prints
+/// one removal line per key when opencode is absent, and fails loudly if
+/// opencode exists but a removal fails. The fake `opencode` on PATH models the
+/// service-env contract with a state file, so assertions run against what the
+/// environment then answers (`service get env KEY` prints the value) — not on
+/// which internal calls stub-client made. State file lives in a temp dir; the
+/// host's real opencode env (if any) is untouched.
+async fn unset_lifecycle(server: &Server) {
+    let workdir = tempdir();
+    let fake_bin = workdir.join("fake-opencode-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let state = workdir.join("service-env.txt");
+    let fake = fake_bin.join("opencode");
+    // Args: service <set|unset|get> env KEY [VALUE]; state is one KEY=VALUE
+    // per line. `service get env KEY` prints the value — the external
+    // behavior assertions read through it.
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\nSTATE=\"$ZONEPAIR_FAKE_OC_STATE\"\ncase \"$1 $2 $3\" in\n  \"service set env\")\n    grep -v \"^$4=\" \"$STATE\" 2>/dev/null > \"$STATE.tmp\" || true\n    echo \"$4=$5\" >> \"$STATE.tmp\"; mv \"$STATE.tmp\" \"$STATE\"; exit 0;;\n  \"service unset env\")\n    grep -v \"^$4=\" \"$STATE\" 2>/dev/null > \"$STATE.tmp\" || true\n    mv \"$STATE.tmp\" \"$STATE\"; exit 0;;\n  \"service get env\")\n    grep \"^$4=\" \"$STATE\" 2>/dev/null | cut -d= -f2-\n    exit 0;;\n  \"service restart\")\n    exit 0;;\nesac\ncase \"$1\" in --version) echo \"opencode v2.2.5\";; esac\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let run_fake = |args: &[&str]| -> String {
+        let out = Command::new(&fake)
+            .args(args)
+            .env("ZONEPAIR_FAKE_OC_STATE", &state)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fake opencode {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    // Simulate a configured relay: the four keys setup writes, plus the PROBE
+    // a failed setup leaves behind.
+    for (k, v) in [
+        ("CLAUDE_STUB_URL", format!("ws://127.0.0.1:{}", server.port)),
+        ("OPENCODE_CLAUDE_PATH", client_bin()),
+        ("CLAUDE_CONFIG_DIR", workdir.join("mirror").display().to_string()),
+        ("CLAUDE_STUB_MIRROR", "1".to_string()),
+        ("PROBE", "PROBE".to_string()),
+    ] {
+        run_fake(&["service", "set", "env", k, &v]);
+    }
+
+    let run_unset_with_path = |path: Option<std::path::PathBuf>| -> std::process::Output {
+        let mut cmd = Command::new(client_bin());
+        cmd.arg("unset")
+            .env_remove("CLAUDE_STUB_URL")
+            .env_remove("CLAUDE_STUB_TOKEN");
+        match path {
+            Some(p) => {
+                cmd.env("PATH", &p);
+            }
+            None => {
+                cmd.env("PATH", format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default()))
+                    .env("ZONEPAIR_FAKE_OC_STATE", &state);
+            }
+        }
+        cmd.output().unwrap_or_else(|e| fail(&format!("spawn stub-client unset: {e}")))
+    };
+
+    // Happy path: every key removed, each confirmed on stdout, and the
+    // environment answers empty through `service get env` afterwards.
+    let out = run_unset_with_path(None);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        fail(&format!("unset failed: {stdout}{stderr}"));
+    }
+    for key in ["CLAUDE_STUB_URL", "OPENCODE_CLAUDE_PATH", "CLAUDE_CONFIG_DIR", "CLAUDE_STUB_MIRROR", "PROBE"] {
+        if !stdout.contains(&format!("removed {key}")) {
+            fail(&format!("unset did not confirm removal of {key}: {stdout}"));
+        }
+        let got = run_fake(&["service", "get", "env", key]);
+        if !got.trim().is_empty() {
+            fail(&format!("{key} still set after unset: {got}"));
+        }
+    }
+
+    // Idempotent: a second run on the now-clean environment is a no-op.
+    let out = run_unset_with_path(None);
+    if !out.status.success() {
+        fail(&format!("unset not idempotent: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    }
+    eprintln!("unset lifecycle ok (removal, probe sweep, idempotent, env answers empty)");
+
+    // No server contact: unset never opened a connection to the relay.
+    if let Some(child) = &server.child {
+        assert_no_dial_for(child.id(), server.port);
+    }
+
+    // opencode absent: fallback prints one removal line per key, exit 0.
+    let out = run_unset_with_path(Some(workdir.join("empty-path")));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        fail(&format!("unset fallback failed: {stdout}{}", String::from_utf8_lossy(&out.stderr)));
+    }
+    for key in ["CLAUDE_STUB_URL", "OPENCODE_CLAUDE_PATH", "CLAUDE_CONFIG_DIR", "CLAUDE_STUB_MIRROR"] {
+        if !stdout.contains(&format!("unset {key}")) {
+            fail(&format!("unset fallback missing removal line for {key}: {stdout}"));
+        }
+    }
+    eprintln!("unset fallback ok (removal lines without opencode)");
+
+    // opencode present but removal fails: non-zero exit, loud message.
+    let broken_bin = workdir.join("broken-opencode-bin");
+    std::fs::create_dir_all(&broken_bin).unwrap();
+    let broken = broken_bin.join("opencode");
+    std::fs::write(
+        &broken,
+        "#!/bin/sh\ncase \"$1 $2 $3\" in\n  \"service set env\") exit 0;;\n  \"service unset env\") echo \"simulated unset failure\" >&2; exit 3;;\nesac\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = Command::new(client_bin())
+        .arg("unset")
+        .env("PATH", &broken_bin)
+        .env("ZONEPAIR_FAKE_OC_STATE", &state)
+        .output()
+        .unwrap();
+    if out.status.success() {
+        fail("unset exited 0 despite a failing removal command");
+    }
+    if !String::from_utf8_lossy(&out.stderr).contains("failed") {
+        fail(&format!("unset hid the removal failure: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    eprintln!("unset failure propagation ok (non-zero on failed removal)");
+}
+
 async fn run_suite() {
     if std::env::var("ZONEPAIR_REAL").is_ok_and(|v| v == "1") {
         eprintln!("real-model suite");
@@ -749,6 +887,7 @@ async fn run_suite() {
     let server = spawn_or_external().await;
     basic_turn(&server.base).await;
     doctor_accepts_url(&server).await;
+    unset_lifecycle(&server).await;
     tool_round_trip(&server.base).await;
     sess_rides_http(&server.base, &server).await;
     mirror_sync_pushes_and_pulls(&server.base, &server).await;
