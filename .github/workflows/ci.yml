@@ -15,14 +15,24 @@ permissions:
 
 jobs:
   check:
-    name: nix flake check
-    runs-on: ubuntu-latest
+    name: nix flake check (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: macos-14
+            system: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
       # Builds checks.default (the crate with `cargo test` in checkPhase) plus
-      # the shellcheck check, and evaluates every package/devShell.
+      # the shellcheck check, and evaluates every package/devShell. On darwin
+      # this exercises the stub-darwin build path and the suite's non-procfs
+      # branches; the no-dial attribution is linux-only by design.
       - run: nix flake check -L
 
   e2e-native:

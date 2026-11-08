@@ -261,8 +261,17 @@ fn established_rows() -> Vec<(u16, String)> {
 
 /// ADR-0001, enforced: the server process must own no established socket that
 /// it did not accept on its listen port.
+///
+/// procfs-only: `/proc/{pid}/fd` and `/proc/net/tcp` do not exist on macOS.
+/// There the attribution is skipped with a note (same policy as an external
+/// server) — the container e2e still enforces it where it matters (ADR-0001's
+/// network namespace lives on machine B, linux).
 fn assert_no_dial_for(child_id: u32, port: u16) {
     let inodes = socket_inodes(child_id);
+    if !cfg!(target_os = "linux") && inodes.is_empty() {
+        eprintln!("  note: no procfs on this platform — no-dial not attributable, skipped");
+        return;
+    }
     assert!(!inodes.is_empty(), "server has no open fds");
     let offenders: Vec<u16> = established_rows()
         .into_iter()

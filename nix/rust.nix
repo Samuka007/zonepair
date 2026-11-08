@@ -1,6 +1,9 @@
 { lib, pkgs, system, product, toolchains, ... }:
 let
   # musl static triple per host system — the portable release artifact.
+  # Static linking is a linux/musl story: darwin has no musl target, and
+  # Apple's codesigning gate refuses unknown LC segments that manual static
+  # tricks produce, so darwin ships a normal (dynamic) release build instead.
   muslTarget = {
     x86_64-linux = "x86_64-unknown-linux-musl";
     aarch64-linux = "aarch64-unknown-linux-musl";
@@ -35,7 +38,8 @@ let
         meta = {
           inherit (product) description homepage;
           inherit mainProgram;
-          platforms = lib.platforms.linux;
+          # linux + darwin; callers narrow this via `meta` for cross builds
+          platforms = lib.platforms.linux ++ lib.platforms.darwin;
         }
         // meta;
       }
@@ -75,16 +79,35 @@ in
     extra.RUSTFLAGS = remap tcHost;
   };
 
-  # --- static musl release binary ---------------------------------------------
-  # pkgsStatic forces a musl + crt-static stdenv, so buildRustPackage passes
-  # --target <musl> and links statically; the fenix toolchain supplies the
-  # matching rust-std. Release ships only the two production binaries.
+  # --- platform-gated release binaries -----------------------------------------
+  # stub-static (linux): pkgsStatic forces a musl + crt-static stdenv, so
+  # buildRustPackage passes --target <musl> and links statically; the fenix
+  # toolchain supplies the matching rust-std. Release ships only the two
+  # production binaries. linux-only: darwin has no musl target — declared in
+  # meta.platforms, so darwin eval refuses locally instead of breaking.
+  # stub-darwin (darwin): plain dynamic release build on the host toolchain —
+  # darwin has no static-linking story. Its meta.platforms is darwin-only, so
+  # linux machines simply can't build it (and never need to).
   packages.stub-static = mkStub {
     rustPlatform = toolchains.rustPlatformFrom pkgs.pkgsStatic tcStatic;
     bins = [
       "stub-server"
       "stub-client"
     ];
+    meta.platforms = [
+      "x86_64-linux"
+      "aarch64-linux"
+    ];
     extra.RUSTFLAGS = "${remap tcStatic} -C target-feature=+crt-static";
+  };
+
+  packages.stub-darwin = mkStub {
+    rustPlatform = toolchains.rustPlatformFrom pkgs tcHost;
+    bins = [
+      "stub-server"
+      "stub-client"
+    ];
+    meta.platforms = [ "aarch64-darwin" ];
+    extra.RUSTFLAGS = remap tcHost;
   };
 }

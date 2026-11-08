@@ -7,7 +7,8 @@ OpenCode's `claude-agent` provider across two machines.
 
 > Packaging is nix-first: `nix build` produces the binaries, the static
 > release artifacts and both OCI images. See [Packaging](#packaging) below.
-> The windows-gnu `.exe` is cross-built with crane.
+> The windows-gnu `.exe` is cross-built with crane; macOS (Apple Silicon)
+> gets a plain dynamic release build — darwin has no musl/static story.
 
 Vocabulary: [GLOSSARY.md](GLOSSARY.md) · Protocol reference:
 [docs/PROTOCOL.md](docs/PROTOCOL.md) · Decisions: [docs/adr/](docs/adr/) ·
@@ -23,7 +24,8 @@ Everything is built by the flake (fenix-pinned Rust toolchain, nixpkgs
 | --- | --- |
 | `nix build` (`.default` / `.#stub`) | all four bins (`stub-server`, `stub-client`, `claude-mock`, `zonepair-e2e`); `cargo test` runs in the build |
 | `.#stub-server` / `.#stub-client` | production-only packages: each ships just its one binary (no mock, no e2e harness) |
-| `.#stub-static` | static musl `stub-server` + `stub-client` (the release artifact) |
+| `.#stub-static` | static musl `stub-server` + `stub-client` (the linux release artifact) |
+| `.#stub-darwin` | dynamic `stub-server` + `stub-client` for `aarch64-darwin` (the macOS release artifact) |
 | `.#stub-client-windows` | `stub-client.exe` cross-built for `x86_64-pc-windows-gnu` |
 | `.#opencode` | A-side harness (`opencode` 2.2.5, carrying the local hash patch) |
 | `.#docker-server` / `.#docker-client` | production OCI images (`docker load < result`) |
@@ -43,8 +45,11 @@ scripts/run-e2e-docker.sh          # in-container suite against the e2e image
 
 CI (`.github/workflows/`) runs `nix flake check` plus the native and
 docker e2e suites on every push/PR. Tagging `v*` publishes a GitHub release
-with the static binaries (`x86_64-linux`, `aarch64-linux`), the Windows
-`.exe`, and pushes both images to `ghcr.io/<owner>/zonepair-{server,client}`.
+with the static linux binaries (`x86_64-linux`, `aarch64-linux`), the macOS
+binaries (`aarch64-darwin`), the Windows `.exe`, and pushes both images to
+`ghcr.io/<owner>/zonepair-{server,client}` as multi-arch indexes
+(`linux/amd64` + `linux/arm64`) — the release workflow pushes at the
+registry-protocol level (skopeo/regctl), so no docker daemon is involved.
 
 
 ## Quickstart (mock claude)
@@ -125,8 +130,16 @@ older builds reject).
 **Install** — the client is one static binary; that is the whole install:
 
 ```bash
-nix build .#stub-static                                  # or the release asset
+nix build .#stub-static     # linux (or the release asset); macOS: .#stub-darwin
 install -m755 result/bin/stub-client ~/.local/bin/stub-client
+```
+
+macOS, non-nix path: a browser-downloaded release asset carries the
+quarantine flag and Gatekeeper blocks its first run. One-time fix (ad-hoc
+signed, like every nixpkgs darwin binary — no notarization):
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/stub-client
 ```
 
 **Configure** — these variables are read by the opencode **server**, and the

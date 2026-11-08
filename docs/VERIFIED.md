@@ -3,6 +3,55 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-08 (part 2) — darwin verification path made real
+
+- `zonepair-e2e`'s no-dial attribution (ADR-0001) reads `/proc/{pid}/fd` +
+  `/proc/net/tcp` — procfs, linux-only. `assert_no_dial_for` now skips with a
+  note on non-linux when no procfs data exists (same policy as an external
+  server); the linux behavior is byte-identical. This was a hard failure on
+  darwin: `socket_inodes` returns empty → `assert!(!inodes.is_empty())` panics.
+- `ci.yml` check job is now a matrix (ubuntu-latest + macos-14): every PR
+  compiles and `cargo test`s on darwin — `checks.aarch64-darwin.default`
+  builds `stub-darwin` and runs the suite with the skipped-attribution branch.
+  actionlint clean.
+- Linux regression: `nix build .#stub` (cargo test in checkPhase) green;
+  `result/bin/zonepair-e2e` against the built bins: **E2E PASS** (9 sessions,
+  no-dial attribution still enforced).
+- README: mac non-nix install gets the one-time
+  `xattr -d com.apple.quarantine` note (ad-hoc signed binary; no notarization
+  by design — CLI audience, same policy as nixpkgs darwin binaries).
+
+## 2026-11-08 — darwin target + daemonless multi-arch image release
+
+- `aarch64-darwin` joins `flake.nix` `systems`. `.#stub-darwin` (new): plain
+  dynamic release build on the host fenix toolchain; `.#stub-static` is now
+  `lib.mkIf hostPlatform.isLinux` — darwin has no musl target. Verified by
+  eval: `packages.aarch64-darwin.stub-darwin` = `zonepair-0.1.0`,
+  `packages.aarch64-darwin.stub-static` correctly absent, both linux
+  static attrs unchanged.
+- skopeo offline conversion of the `dockerTools` tarball verified on this
+  host: `skopeo copy docker-archive:<nix out> dir:<d>` → docker manifest
+  v2, 49 layers, `inspect --config` reports `linux/amd64`; no daemon touched.
+  Auth/policy via `--insecure-policy`.
+- `--override-arch` does **not** rewrite the config blob (two experiments,
+  config stayed `amd64`) — platform descriptors cannot be faked, so the
+  multi-arch release builds each arch natively (ubuntu-latest +
+  ubuntu-24.04-arm) instead of cross-building images.
+- registry-level flow verified end-to-end against a local `distribution`
+  registry (no daemon): regctl `image copy ocidir://…` push, `index create`
+  merging two per-arch tags → OCI index whose entries carry
+  `platform: {architecture, os}` correctly; skopeo `inspect --raw` reads the
+  index back. regctl's `--desc-platform` proved unreliable on local OCI
+  layouts (descriptor lost) but works as expected against a registry.
+- `release.yml` rewritten: per-arch build matrix (2 arch × 2 images) pushes
+  `:<system>` tags via skopeo→regctl, then one job merges
+  `index create` + `image copy` retag into `:<version>`/`:latest`.
+  actionlint clean. Docker daemon, `docker load/tag/push` all gone.
+- ghcr auth (regctl `--host reg=…,user=…,pass=…`) verified to reach the
+  token exchange: bad creds → `unauthorized` from the realm, i.e. the
+  challenge round-trip works; real push needs the workflow's
+  `GITHUB_TOKEN` with `packages: write`.
+
 ## 2026-11-06 (part 4) — real-model e2e is Rust, wired from the omp credential store
 
 - `agent.db` (`~/.omp/agent/agent.db`) is the live credential store, not the
