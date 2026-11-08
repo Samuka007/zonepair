@@ -67,16 +67,17 @@ file-level fork verification, 3 concurrent forks, and the no-dial assertion.
 ## Real-model e2e (real claude, real provider)
 
 Boots machine B with the genuine `claude` binary and drives a real model
-backend through the relay (needs network + a credential in the omp store):
+backend through the relay (needs network + an API token). Credentials come
+from the environment — the same `ANTHROPIC_AUTH_TOKEN` claude itself
+consumes, so CI secrets or your shell work unchanged:
 
 ```bash
+export ANTHROPIC_AUTH_TOKEN=...           # provider API key
 ZONEPAIR_WIRING=deepseek nix develop -c cargo test --test e2e
 ZONEPAIR_WIRING=zai      nix develop -c cargo test --test e2e
 ```
 
-Wiring resolves the provider's Anthropic-compatible endpoint and reads its
-key from the omp credential store (`~/.omp/agent/agent.db`, table
-`auth_credentials`):
+The provider shorthand selects the Anthropic-compatible endpoint and model:
 
 | `ZONEPAIR_WIRING` | base URL | model |
 | --- | --- | --- |
@@ -184,7 +185,7 @@ The login flow is intentionally not replaced — anything involving local
 | `ZONEPAIR_CLAUDE_BIN` | real-model suite | claude binary to spawn (default `claude`) |
 | `ZONEPAIR_SERVER_BIN` / `ZONEPAIR_MOCK_BIN` | zonepair-e2e | binaries to drive (cargo test sets them) |
 | `ZONEPAIR_EXTERNAL_URL` / `ZONEPAIR_KEEP` | zonepair-e2e | drive an existing server / keep the temp dir |
-| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` | real-model suite | set from the credential store, not by hand |
+| `ANTHROPIC_AUTH_TOKEN` | real-model suite | provider API key (export it; base URL/model come from the provider shorthand) |
 
 ## Layout
 

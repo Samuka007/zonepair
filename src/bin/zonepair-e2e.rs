@@ -487,30 +487,33 @@ async fn server_never_dials(server: &Server) {
     assert_no_dial(server);
 }
 
-// ---- real model (credentials from the omp credential store) -------------------
+// ---- real model (credentials from the environment) ---------------------------
 
 /// Real claude on B, wired to a real provider through the same stdio-v1
 /// semantics: marker echo, fork of the real store, and fork/resume reproducing
 /// the marker across processes.
+///
+/// Opt in with `ZONEPAIR_WIRING=<provider>` and export `ANTHROPIC_AUTH_TOKEN`
+/// (the variable claude consumes); the provider shorthand only selects the
+/// endpoint and model.
 async fn real_model_suite(provider: &str) {
     let claude_bin =
         std::env::var("ZONEPAIR_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
-    let wiring = match wiring::for_provider(provider, None) {
-        Ok(w) => w,
-        Err(e) => fail(&format!("wiring for {provider}: {e:#}")),
+    let Some((base_url, model)) = wiring::endpoint_for(provider) else {
+        fail(&format!(
+            "no Anthropic-compatible endpoint known for provider {provider:?} (known: deepseek, zai)"
+        ));
     };
-    eprintln!(
-        "wiring: provider={provider} base={} model={}",
-        wiring.base_url,
-        wiring.model.clone().unwrap_or_default()
-    );
+    let auth_token = std::env::var("ANTHROPIC_AUTH_TOKEN")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fail("ANTHROPIC_AUTH_TOKEN must be exported for the real-model suite"));
+    eprintln!("real-model: provider={provider} base={base_url} model={model}");
     // envf allowlists ANTHROPIC_* / DISABLE_* — the wiring rides the hello
     // header to the claude child on B.
-    std::env::set_var("ANTHROPIC_BASE_URL", &wiring.base_url);
-    std::env::set_var("ANTHROPIC_AUTH_TOKEN", &wiring.auth_token);
-    if let Some(m) = &wiring.model {
-        std::env::set_var("ANTHROPIC_MODEL", m);
-    }
+    std::env::set_var("ANTHROPIC_BASE_URL", base_url);
+    std::env::set_var("ANTHROPIC_AUTH_TOKEN", &auth_token);
+    std::env::set_var("ANTHROPIC_MODEL", model);
     std::env::set_var("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
     std::env::set_var("DISABLE_AUTOUPDATER", "1");
 

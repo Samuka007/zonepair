@@ -86,8 +86,8 @@ _Avoid_: upstream/downstream
 
 **wiring**:
 The provider credential bundle (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN /
-optional model overrides) resolved by the real-model suite from the omp
-credential store.
+optional model overrides) resolved by the real-model suite from its
+environment.
 _Avoid_: provider config, credentials (credentials are the values; wiring is
 the resolved bundle)
 
