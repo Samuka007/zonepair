@@ -83,7 +83,7 @@ pub async fn open_stdio(base: &Base, header: &Value, token: Option<&str>) -> Res
         .with_context(|| format!("ws dial {}", base.stdio_ws()))?;
     let (mut tx, mut rx) = ws.split();
 
-    tx.send(Message::Text(header.to_string()))
+    tx.send(Message::Text(header.to_string().into()))
         .await
         .context("sending hello")?;
     let ack = loop {
@@ -108,7 +108,7 @@ impl Stdio {
     /// Send one protocol line (one text frame; the newline is implied).
     pub async fn send_line(&mut self, line: &Value) -> Result<()> {
         self.tx
-            .send(Message::Text(line.to_string()))
+            .send(Message::Text(line.to_string().into()))
             .await
             .context("sending frame")
     }
@@ -116,7 +116,7 @@ impl Stdio {
     /// Ask the server to close the child's stdin (claude flushes on EOF).
     pub async fn send_eof(&mut self) -> Result<()> {
         self.tx
-            .send(Message::Text(json!({"proto": "stdin-eof"}).to_string()))
+            .send(Message::Text(json!({"proto": "stdin-eof"}).to_string().into()))
             .await
             .context("sending stdin-eof")
     }
@@ -133,7 +133,9 @@ impl Stdio {
                             continue; // carrier control frame, not the protocol
                         }
                     }
-                    return Ok(Some(frame)); // non-JSON passthrough (claude warnings)
+                    // Utf8Bytes derefs to str; return owned String (protocol
+                    // lines are handed to callers that outlive the frame).
+                    return Ok(Some(frame.to_string())); // non-JSON passthrough (claude warnings)
                 }
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => return Err(e.into()),

@@ -1,0 +1,20 @@
+# Dependency updates: cargo CLI re-syncs Cargo.toml ranges and Cargo.lock
+# against crates.io weekly; cargo-audit (nix shell nixpkgs#cargo-audit) checks
+# the RustSec advisory database. CI runs the full test gate on every PR
+# (see .github/workflows/ci.yml), so an upgraded range that breaks the build
+# surfaces immediately.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

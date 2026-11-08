@@ -13,6 +13,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use futures_util::SinkExt;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,13 +34,13 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/stdio", get(stdio_ws))
         .route(
-            "/v1/store/sessions/:id",
+            "/v1/store/sessions/{id}",
             get(store_exists).delete(store_delete),
         )
-        .route("/v1/store/sessions/:id/messages", get(store_messages))
-        .route("/v1/store/sessions/:id/messages", put(store_merge))
+        .route("/v1/store/sessions/{id}/messages", get(store_messages))
+        .route("/v1/store/sessions/{id}/messages", put(store_merge))
         .route("/v1/store/sessions", get(store_list))
-        .route("/v1/store/sessions/:id/fork", post(store_fork))
+        .route("/v1/store/sessions/{id}/fork", post(store_fork))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state,
@@ -94,7 +95,7 @@ async fn stdio_socket(mut ws: WebSocket, state: AppState) {
         Err(e) => {
             let _ = ws
                 .send(Message::Text(
-                    json!({"ok": false, "error": format!("bad hello: {e}")}).to_string(),
+                    json!({"ok": false, "error": format!("bad hello: {e}")}).to_string().into(),
                 ))
                 .await;
             return;
@@ -111,12 +112,12 @@ async fn stdio_socket(mut ws: WebSocket, state: AppState) {
         Ok(child) => child,
         Err(e) => {
             let _ = ws
-                .send(Message::Text(json!({"ok": false, "error": e.to_string()}).to_string()))
+                .send(Message::Text(json!({"ok": false, "error": e.to_string()}).to_string().into()))
                 .await;
             return;
         }
     };
-    let _ = ws.send(Message::Text(json!({"ok": true}).to_string())).await;
+    let _ = ws.send(Message::Text(json!({"ok": true}).to_string().into())).await;
 
     // Option + explicit drop is load-bearing: tokio's ChildStdin::shutdown()
     // only flushes, it does NOT close the pipe. claude (stream-input mode)
@@ -148,7 +149,7 @@ async fn stdio_socket(mut ws: WebSocket, state: AppState) {
         tokio::select! {
             out = line_rx.recv() => match out {
                 Some(line) => {
-                    if ws.send(Message::Text(line)).await.is_err() {
+                    if ws.send(Message::Text(line.into())).await.is_err() {
                         break;
                     }
                 }
@@ -177,7 +178,8 @@ async fn stdio_socket(mut ws: WebSocket, state: AppState) {
                     let _ = ws
                         .send(Message::Text(
                             json!({"proto": "error", "error": "binary frames violate ws-line-v1"})
-                                .to_string(),
+                                .to_string()
+                                .into(),
                         ))
                         .await;
                 }

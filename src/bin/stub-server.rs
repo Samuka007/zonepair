@@ -40,8 +40,8 @@ async fn main() -> Result<()> {
     }
 
     let store = PathBuf::from(store.unwrap_or_else(|| {
-        // `home` resolves cross-platform (see stub-client's mirror_default).
-        let home = home::home_dir()
+        // std::env::home_dir (see stub-client's mirror_default note).
+        let home = std::env::home_dir()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
