@@ -133,7 +133,7 @@ which never sees your exports.
 
 ```bash
 opencode service set env OPENCODE_CLAUDE_PATH "$HOME/.local/bin/stub-client"
-opencode service set env CLAUDE_STUB_ENDPOINT  b:7788
+opencode service set env CLAUDE_STUB_URL       ws://b:7789
 opencode service set env CLAUDE_CONFIG_DIR     "$HOME/.claude-remote-mirror"
 opencode service set env CLAUDE_STUB_MIRROR    1
 stub-client sync                                         # one-time mirror bootstrap
@@ -142,9 +142,9 @@ stub-client sync                                         # one-time mirror boots
 All four of those are what `stub-client setup` writes, so in practice:
 
 ```bash
-stub-client setup --endpoint b:7788      # writes the server env, creates +
+stub-client setup --url ws://b:7789      # writes the server env, creates +
                                          # bootstraps the mirror, then doctor
-stub-client doctor                       # preflight, any time
+stub-client doctor --url ws://b:7789     # preflight, any time
 ```
 
 `doctor` exists because the failure mode is silent: if the opencode server

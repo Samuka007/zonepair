@@ -85,6 +85,10 @@ fn mock_bin() -> String {
     std::env::var("ZONEPAIR_MOCK_BIN").unwrap_or_else(|_| "claude-mock".to_string())
 }
 
+fn client_bin() -> String {
+    std::env::var("ZONEPAIR_CLIENT_BIN").unwrap_or_else(|_| "stub-client".to_string())
+}
+
 async fn spawn_server() -> Server {
     let workdir = tempdir();
     let store = workdir.join("store");
@@ -670,6 +674,35 @@ async fn real_model_suite() {
     assert_no_dial_for(child.id(), port);
 }
 
+/// `doctor --url` must work with no `CLAUDE_STUB_URL` in the environment:
+/// `stub-client setup` invokes doctor with the URL as a flag, and requiring
+/// the env var first made the setup flow fail at its final step.
+async fn doctor_accepts_url(server: &Server) {
+    let url = format!("ws://127.0.0.1:{}", server.port);
+    let out = Command::new(client_bin())
+        .args(["doctor", "--url", &url])
+        .env_remove("CLAUDE_STUB_URL")
+        .env_remove("CLAUDE_STUB_TOKEN")
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("  note: stub-client not found — doctor check skipped");
+            return;
+        }
+        Err(e) => fail(&format!("spawn stub-client doctor: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        fail(&format!("doctor --url failed: {stdout}{stderr}"));
+    }
+    if stdout.contains("CLAUDE_STUB_URL is required") {
+        fail("doctor --url still requires CLAUDE_STUB_URL in the environment");
+    }
+    eprintln!("doctor --url ok");
+}
+
 async fn run_suite() {
     if std::env::var("ZONEPAIR_REAL").is_ok_and(|v| v == "1") {
         eprintln!("real-model suite");
@@ -680,6 +713,7 @@ async fn run_suite() {
 
     let server = spawn_or_external().await;
     basic_turn(&server.base).await;
+    doctor_accepts_url(&server).await;
     tool_round_trip(&server.base).await;
     sess_rides_http(&server.base, &server).await;
     mirror_sync_pushes_and_pulls(&server.base, &server).await;

@@ -168,17 +168,16 @@ async fn setup_cli(args: &[String]) -> Result<()> {
 }
 
 async fn doctor_cli(args: &[String]) -> Result<()> {
-    let mut url = std::env::var("CLAUDE_STUB_URL")
+    let mut url: Option<String> = std::env::var("CLAUDE_STUB_URL")
         .ok()
-        .filter(|v| !v.is_empty())
-        .context("CLAUDE_STUB_URL is required")?;
+        .filter(|v| !v.is_empty());
     let mut failures = 0usize;
     let mut explicit_mirror = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
             "--url" => {
-                url = args.get(i + 1).context("--url needs URL")?.clone();
+                url = Some(args.get(i + 1).context("--url needs URL")?.clone());
                 i += 2;
             }
             "--mirror" => {
@@ -188,6 +187,7 @@ async fn doctor_cli(args: &[String]) -> Result<()> {
             other => bail!("unknown doctor arg {other}"),
         }
     }
+    let url = url.context("CLAUDE_STUB_URL or --url is required")?;
     let base = client::parse_base(&url)?;
 
     let warn = |msg: String| println!("  WARN  {msg}");

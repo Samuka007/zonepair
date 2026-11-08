@@ -7,6 +7,7 @@ fn e2e() {
     let out = Command::new(env!("CARGO_BIN_EXE_zonepair-e2e"))
         .env("ZONEPAIR_SERVER_BIN", env!("CARGO_BIN_EXE_stub-server"))
         .env("ZONEPAIR_MOCK_BIN", env!("CARGO_BIN_EXE_claude-mock"))
+        .env("ZONEPAIR_CLIENT_BIN", env!("CARGO_BIN_EXE_stub-client"))
         .status()
         .expect("run zonepair-e2e");
     assert!(out.success(), "zonepair-e2e failed");
