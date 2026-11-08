@@ -171,8 +171,9 @@
           # any image.
 
           # --- OCI images built by nixpkgs dockerTools (no Dockerfile) -------
-          # /usr/local/bin/stub-server is a symlink into the store so the
-          # hardcoded paths in scripts/ keep working.
+          # /usr/local/bin carries the stub package's bins (server, mock claude,
+          # e2e harness) as symlinks so the hardcoded paths in scripts/ keep
+          # working and the container's default PATH resolves them.
           # Baseline every dockerTools image needs: /bin/sh, /usr/bin/env (so
           # `#!/usr/bin/env bash` shebangs resolve) and /etc/{passwd,group,
           # nsswitch.conf} (glibc reads nsswitch.conf to resolve names — without
@@ -204,6 +205,8 @@
               mkdir -p usr/local/bin root tmp
               chmod 1777 tmp
               ln -s ${stub}/bin/stub-server usr/local/bin/stub-server
+              ln -s ${stub}/bin/claude-mock usr/local/bin/claude-mock
+              ln -s ${stub}/bin/zonepair-e2e usr/local/bin/zonepair-e2e
             '';
             # No entrypoint script: stub-server reads STORE / LOG_DIR /
             # LISTEN / CLAUDE_CMD from the environment itself, so the image

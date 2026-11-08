@@ -33,8 +33,7 @@ transparent byte piping for the lifetime of one claude process.
 _Avoid_: raw mode, tcp mode
 
 **sess-v1**:
-The stateless JSON-lines RPC for the session store: exists, messages, fork,
-delete, merge, list.
+The stateless session-store RPC: exists, messages, fork, delete, merge, list.
 _Avoid_: store RPC, projection RPC
 
 **carrier**:
@@ -87,7 +86,8 @@ _Avoid_: upstream/downstream
 
 **wiring**:
 The provider credential bundle (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN /
-optional model overrides) emitted by `mock/wiring-env.py` from models.yml.
+optional model overrides) resolved by the real-model suite from the omp
+credential store.
 _Avoid_: provider config, credentials (credentials are the values; wiring is
 the resolved bundle)
 

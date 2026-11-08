@@ -46,41 +46,44 @@ with the static binaries (`x86_64-linux`, `aarch64-linux`), the Windows
 
 ## Quickstart (mock claude)
 
-Native — B emulated on 127.0.0.2, the second loopback address:
+Native — spawns `stub-server` on a free loopback port with the Rust mock
+claude, then drives the whole suite against it:
 
 ```bash
-scripts/run-e2e-native.sh
+nix develop -c cargo test --workspace
 ```
 
-Docker — two containers, one network, B named `b`:
+Docker — builds and loads the nix images, boots container `b` (server + mock
+claude) and execs the same Rust harness inside it:
 
 ```bash
 scripts/run-e2e-docker.sh
 ```
 
-Both run the same suite: basic turn, MCP round trip over the relay, 3
-concurrent clients on one server, store RPC (exists/messages/fork/delete),
+Both run the same suite: basic turn, in-band tool round trip, 3 concurrent
+clients on one server, store RPC (exists/messages/fork/delete), mirror sync,
 file-level fork verification, 3 concurrent forks, and the no-dial assertion.
 
 ## Real-model e2e (real claude, real provider)
 
 Boots machine B with the genuine `claude` binary and drives a real model
-backend through the relay:
+backend through the relay (needs network + a credential in the omp store):
 
 ```bash
-scripts/run-e2e-docker-real.sh                 # WIRING=anthropic (default)
-WIRING=deepseek scripts/run-e2e-docker-real.sh # DeepSeek <-> Claude Code bridge
+ZONEPAIR_WIRING=deepseek nix develop -c cargo test --test e2e
+ZONEPAIR_WIRING=zai      nix develop -c cargo test --test e2e
 ```
 
-Wiring is read from `~/.omp/agent/models.yml` (override with `MODELS_YML`) by
-`mock/wiring-env.py`:
+Wiring resolves the provider's Anthropic-compatible endpoint and reads its
+key from the omp credential store (`~/.omp/agent/agent.db`, table
+`auth_credentials`):
 
-| WIRING | base URL | credential | model |
-| --- | --- | --- | --- |
-| `anthropic` (default) | models.yml `providers.anthropic.baseUrl` | `providers.anthropic.apiKey` | gateway-routed claude names |
-| `deepseek` | `https://api.deepseek.com/anthropic` | `providers.deepseek.apiKey` | `deepseek-flash` |
+| `ZONEPAIR_WIRING` | base URL | model |
+| --- | --- | --- |
+| `deepseek` | `https://api.deepseek.com/anthropic` | `deepseek-flash` |
+| `zai` | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3-flash` |
 
-Credentials travel only as container env → hello header (allowlisted
+Credentials travel only as harness env → hello header (allowlisted
 `ANTHROPIC_*`/`CLAUDE_*`) → claude child env; never written to the repo,
 never printed. The suite asserts: marker echo through A → B → provider, the
 real JSONL session landing in B's store, **fork of the real store + `--resume`
@@ -171,16 +174,17 @@ The login flow is intentionally not replaced — anything involving local
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `WIRING` | `run-e2e-docker-real.sh` | `anthropic` (default) or `deepseek` |
-| `MODELS_YML` | `run-e2e-docker-real.sh` | models.yml path (default `~/.omp/agent/models.yml`) |
-| `CLAUDE_STUB_ENDPOINT` | stub-client, drivers | `host:port` of the stub-server |
-| `STORE_HTTP_PORT` | real e2e | ws-line-v1 listener port on B (default 7789) |
-| `B_CLAUDE_CMD` | docker suites (host) | feeds compose's `CLAUDE_CMD` interpolation; mock suite sets `claude-mock` |
-| `CLAUDE_CMD` | stub-server | command the server spawns as "claude" (default `claude`) |
-| `STORE` / `LOG_DIR` / `HTTP_LISTEN` / `HTTP_TOKEN` | stub-server | same names as the flags; see [PROTOCOL.md](docs/PROTOCOL.md#server-configuration) |
-| `CLAUDE_CONFIG_DIR` | stub-client sync, opencode | A-local mirror of B's store |
+| `CLAUDE_STUB_URL` | stub-client, harness | base URL of the stub-server (`ws://b:7789` / `http://gateway/...`) |
+| `CLAUDE_STUB_TOKEN` | stub-client | bearer token when the server runs with `--token` |
 | `CLAUDE_STUB_MIRROR` | stub-client | `1` enables push/pull sync around each relayed turn |
-| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` | real e2e | provider wiring (set via wiring-env.py, not by hand) |
+| `CLAUDE_CONFIG_DIR` | stub-client sync, opencode | A-local mirror of B's store |
+| `LISTEN` / `TOKEN` / `STORE` / `LOG_DIR` / `CLAUDE_CMD` | stub-server | same names as the flags; see [PROTOCOL.md](docs/PROTOCOL.md#server-configuration) |
+| `B_CLAUDE_CMD` | docker suite (host) | feeds compose's `CLAUDE_CMD` interpolation; the script sets `/usr/local/bin/claude-mock` |
+| `ZONEPAIR_WIRING` | real-model suite | provider: `deepseek` or `zai` |
+| `ZONEPAIR_CLAUDE_BIN` | real-model suite | claude binary to spawn (default `claude`) |
+| `ZONEPAIR_SERVER_BIN` / `ZONEPAIR_MOCK_BIN` | zonepair-e2e | binaries to drive (cargo test sets them) |
+| `ZONEPAIR_EXTERNAL_URL` / `ZONEPAIR_KEEP` | zonepair-e2e | drive an existing server / keep the temp dir |
+| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` | real-model suite | set from the credential store, not by hand |
 
 ## Layout
 

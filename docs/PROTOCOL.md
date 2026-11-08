@@ -13,16 +13,17 @@ value counts as unset.
 
 | Option | Env fallback | Default |
 | --- | --- | --- |
-| `--listen H:P` | — | `0.0.0.0:7788` |
-| `--http-listen H:P` | `HTTP_LISTEN` | off |
-| `--http-token V` | `HTTP_TOKEN` | off |
+| `--listen H:P` | `LISTEN` | `0.0.0.0:7789` |
+| `--token V` | `TOKEN` | off |
 | `--store DIR` | `STORE`, then `CLAUDE_CONFIG_DIR` | `$HOME/.claude` |
 | `--claude "CMD ARG ..."` | `CLAUDE_CMD` | `claude` |
 | `--log-dir DIR` | `LOG_DIR` | `./stub-logs` |
 
 ## Connection dispatch
 
-Connection type is chosen by the first line the client sends.
+The WS route chooses the protocol: `/v1/stdio` is `stdio-v1`, the
+`/v1/store/...` endpoints are `sess-v1`. After the route, `stdio-v1` starts
+with one hello frame.
 
 ### stdio-v1 (one per claude process)
 
@@ -45,22 +46,16 @@ A<->B raw bytes: A-stdin -> child.stdin, child.stdout -> A-stdout
 * When A closes the socket, B closes the child's stdin and `kill_on_drop` is
   armed — no orphaned claude processes.
 
-### sess-v1 (stateless JSON-lines RPC)
+### sess-v1 (stateless store RPC)
 
-| op | request | response |
-| --- | --- | --- |
-| exists | `{"id":1,"op":"exists","session":"S"}` | `{"id":1,"ok":true,"exists":bool}` |
-| messages | `{"id":1,"op":"messages","session":"S"}` | `{"ok":true,"messages":[...]}` |
-| fork | `{"id":1,"op":"fork","session":"S","upTo":"uuid"}` | `{"ok":true,"sessionId":"new","pairs":[[old,new]...],"messages":[...]}` |
-| delete | `{"id":1,"op":"delete","session":"S"}` | `{"ok":true,"deleted":bool}` |
-| list | `{"id":1,"op":"list"}` | `{"ok":true,"sessions":["S",...]}` |
-| merge | `{"id":1,"op":"merge","session":"S","messages":[...]}` | `{"ok":true,"added":n,"total":m}` |
+The store operations — exists, messages, fork, delete, list, merge — ride the
+plain-HTTP endpoints in the `ws-line-v1` table below. Responses are the same
+JSON shapes the ops always had (`{"ok":true,...}` / 404 / 401).
 
 ### ws-line-v1 (HTTP/WS listener)
 
-`--http-listen HOST:PORT` adds a second, gateway-friendly listener (raw TCP
-`--listen` stays available; both share the same store/process state). Why:
-ADR-0002.
+The single HTTP/WS listener carries every protocol; front it with a gateway
+for TLS and auth. Why: ADR-0005.
 
 | Endpoint | Shape | Notes |
 | --- | --- | --- |
@@ -93,9 +88,9 @@ the RPC surface exists so machine A never touches B's filesystem.
 
 | Constraint | Implementation | Proof |
 | --- | --- | --- |
-| C/S only — B never dials A (ADR-0001) | `stub-server` only `accept()`s; no outbound `connect` in the binary | `scripts/assert-nodial.sh` fails if the server owns any ESTAB connection whose local port is not the listen port (runs in both e2e suites) |
-| Multiple clients, one server | Every stdio connection gets its own `claude` child (argv/env/cwd from that connection's hello header); session RPC is stateless over a shared, mutex-guarded store | e2e runs 3 concurrent SDK drivers with distinct sessions through one server, plus 3 concurrent forks of one source |
-| Tools execute on A (ADR-0003) | `mcp__opencode__*` bridged over the stdio control channel; no MCP crosses the machine boundary (ADR-0007) | model turns in e2e execute tool calls against A-side implementations |
+| C/S only — B never dials A (ADR-0001) | `stub-server` only `accept()`s; no outbound `connect` in the binary | the Rust harness fails if the server process owns any connection whose local port is not the listener (runs natively and in-container) |
+| Multiple clients, one server | Every stdio connection gets its own `claude` child (argv/env/cwd from that connection's hello header); session RPC is stateless over a shared, mutex-guarded store | e2e runs 3 concurrent relay clients with distinct sessions through one server, plus 3 concurrent forks of one source |
+| Tools execute on A (ADR-0003) | `mcp__opencode__*` bridged over the stdio control channel; no MCP crosses the machine boundary (ADR-0007) | the mock suite checks the tool_use/tool_result shapes in-band; the real-model suite drives them against a live model |
 
 ## Real-claude quirks handled
 
@@ -117,7 +112,7 @@ the RPC surface exists so machine A never touches B's filesystem.
   resolve service `b`), no `/usr/bin/env` and no `/bin/sh` (so
   `#!/usr/bin/env bash` scripts fail to exec), and no writable `/tmp`
   (`mktemp` fails). The flake adds `fakeNss`, `usrBinEnv`, `binSh` and a 1777
-  `/tmp`; `gawk` is needed by `assert-nodial.sh`.
+  `/tmp`.
 * rustc bakes its own sysroot path into std panic locations, which drags the
   whole fenix toolchain into the binary's closure (1.15 GB images). The build
   remaps it away with `--remap-path-prefix=<toolchain>=/rustc`.

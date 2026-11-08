@@ -13,13 +13,13 @@ cd "$ROOT"
 
 scripts/nix-docker-load.sh
 
-export B_CLAUDE_CMD=/bin/claude-mock
+export B_CLAUDE_CMD=/usr/local/bin/claude-mock
 docker compose up -d b
 trap 'docker compose down -v --remove-orphans' EXIT
 
 # The harness needs to find the binaries inside the image.
 docker compose exec -T b \
-  env ZONEPAIR_SERVER_BIN=/bin/stub-server ZONEPAIR_MOCK_BIN=/bin/claude-mock \
-  /bin/zonepair-e2e
+  env ZONEPAIR_SERVER_BIN=/usr/local/bin/stub-server ZONEPAIR_MOCK_BIN=/usr/local/bin/claude-mock \
+  /usr/local/bin/zonepair-e2e
 
 echo "DOCKER E2E PASS"
