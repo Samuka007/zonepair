@@ -8,9 +8,6 @@ permissions:
   contents: write # upload release assets
   packages: write # push images to ghcr.io
 
-env:
-  REGCTL: nix run nixpkgs#regctl --
-
 jobs:
   check:
     name: nix flake check
@@ -144,7 +141,10 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME}"
           host="reg=ghcr.io,user=${OWNER,,},pass=${PASSWORD},tls=enabled"
-          rc=(nix run nixpkgs#regctl -- --host "$host")
+          # `nix run nixpkgs#regctl` resolves mainProgram to `regclient` (the
+          # umbrella binary, absent from bin/) and fails; shell the package
+          # and invoke `regctl` directly.
+          rc=(nix shell nixpkgs#regclient -c regctl --host "$host")
           for name in server client; do
             repo="ghcr.io/${OWNER,,}/zonepair-${name}"
             # Both per-arch tags point at images whose config blobs carry the
