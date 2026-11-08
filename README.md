@@ -26,10 +26,14 @@ Everything is built by the flake (fenix-pinned Rust toolchain, nixpkgs
 | `.#stub-server` / `.#stub-client` | production-only packages: each ships just its one binary (no mock, no e2e harness) |
 | `.#stub-static` | static musl `stub-server` + `stub-client` (the linux release artifact) |
 | `.#stub-darwin` | dynamic `stub-server` + `stub-client` for `aarch64-darwin` (the macOS release artifact) |
+| `.#stub-linux` | dynamic glibc `stub-server` + `stub-client` for Linux — production bins, kept green for future apt/deb packaging (not a release asset) |
+| `.#release-dist` / `.#release-dist-windows` | one build stages the published release asset names for this platform / the cross-built `.exe` |
 | `.#stub-client-windows` | `stub-client.exe` cross-built for `x86_64-pc-windows-gnu` |
 | `.#opencode` | A-side harness (`opencode` 2.2.5, carrying the local hash patch) |
 | `.#docker-server` / `.#docker-client` | production OCI images (`docker load < result`) |
 | `.#docker-server-test` | production server image + mock claude + e2e harness, for `run-e2e-docker.sh` only |
+| `.#push-image` | app: build both production images and push `:<system>` tags (`OWNER`/`PASSWORD` env; `REGISTRY` overrides ghcr for local smoke runs) |
+| `.#merge-images` | app: merge per-arch tags into the versioned multi-arch index and retag `latest` (`SYSTEMS` narrows it for local runs) |
 | `nix flake check` | `cargo test` + shellcheck |
 
 ```bash
@@ -37,10 +41,15 @@ nix build                          # all bins in ./result/bin
 nix build .#stub-server            # production server binary only
 nix build .#stub-client            # production client binary only
 nix build .#stub-static            # static musl binaries
+nix build .#stub-linux             # dynamic glibc production binaries
+nix build .#release-dist           # dist/ with the release asset names
 nix build .#stub-client-windows    # stub-client.exe
 
 scripts/nix-docker-load.sh         # build + docker load all three images
 scripts/run-e2e-docker.sh          # in-container suite against the e2e image
+
+OWNER=you PASSWORD=token nix run .#push-image -- x86_64-linux
+OWNER=you PASSWORD=token nix run .#merge-images -- v0.1.0
 ```
 
 CI (`.github/workflows/`) runs `nix flake check` plus the native and

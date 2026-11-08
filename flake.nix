@@ -43,6 +43,7 @@
             ./nix/rust.nix
             ./nix/windows.nix
             ./nix/images.nix
+            ./nix/apps.nix
             ./nix/devshells.nix
             ./nix/checks.nix
             ./nix/formatter.nix

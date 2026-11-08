@@ -3,6 +3,31 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-08 (part 3) — release mechanics move into the flake
+
+- `.#release-dist` (linux) stages `stub-client-x86_64-linux` +
+  `stub-server-x86_64-linux` — `file` confirms `static-pie linked`, names
+  byte-identical to the rc.3 assets; `.#release-dist-windows` stages
+  `stub-client-x86_64-windows.exe`.
+- `.#stub-linux`: both production bins `dynamically linked` against the
+  nixpkgs glibc (platform-gated to Linux); its checkPhase ran the full suite
+  (8 suites + `E2E PASS`) in release mode. Not a release asset — this is the
+  future apt/deb input.
+- `.#push-image` against a local distribution v3.1.2 registry
+  (`REGISTRY=127.0.0.1:5000`): built and pushed
+  `zonepair-{server,client}:x86_64-linux`; `regctl image inspect` reads back
+  `amd64/linux` for both. Non-ghcr registry gets TLS verification disabled
+  for plain-HTTP smoke runs only.
+- `.#merge-images` (`SYSTEMS=x86_64-linux`, version `smoke-test`): both repos
+  gained `application/vnd.oci.image.index.v1+json` indexes with amd64
+  descriptors; `:latest` digest == `:smoke-test` digest (`sha256:6f7f4868…`).
+- Workflow: `release.yml` shrinks to `nix build`/`nix run` calls (image
+  matrix 4 jobs → 2, one per arch); `actionlint` clean on both workflows.
+- Full gates: `nix flake check -L` and `nix develop -c cargo test
+  --workspace` green (run again at ticket close; see final section).
+- Local registry used for smoke: `nix shell nixpkgs#distribution` on
+  127.0.0.1:5000, torn down after the run — nothing touched ghcr.
+
 ## 2026-11-08 (part 2) — darwin verification path made real
 
 - `zonepair-e2e`'s no-dial attribution (ADR-0001) reads `/proc/{pid}/fd` +

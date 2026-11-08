@@ -18,6 +18,9 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - run: nix flake check -L
 
+  # The flake stages the published asset names; the workflow only moves files
+  # out of the store. Linux stays static musl, macOS dynamic — that decision
+  # lives in the flake, not here.
   release-binaries:
     name: release binaries (${{ matrix.system }})
     needs: [check]
@@ -27,26 +30,17 @@ jobs:
         include:
           - runner: ubuntu-latest
             system: x86_64-linux
-            package: stub-static
           - runner: ubuntu-24.04-arm
             system: aarch64-linux
-            package: stub-static
           - runner: macos-15
             system: aarch64-darwin
-            package: stub-darwin
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: nix build -L ".#${{ matrix.package }}"
-      - name: Stage artifacts
-        run: |
-          mkdir -p dist
-          for b in stub-server stub-client; do
-            cp -L "result/bin/$b" "dist/$b-${{ matrix.system }}"
-          done
-          file dist/* || true
+      - run: nix build -L .#release-dist --out-link release-dist
+      - run: cp -rL release-dist/dist dist # deref the store symlink for upload
       - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.system }}
@@ -61,68 +55,38 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: nix build -L .#stub-client-windows
-      - name: Stage artifact
-        run: |
-          mkdir -p dist
-          cp -L result/bin/stub-client.exe dist/stub-client-x86_64-windows.exe
-          file dist/*
+      - run: nix build -L .#release-dist-windows --out-link release-dist
+      - run: cp -rL release-dist/dist dist # deref the store symlink for upload
       - uses: actions/upload-artifact@v7
         with:
           name: windows-client
           path: dist/*
           if-no-files-found: error
 
-  # Per-arch image builds push to ghcr under a digest-derivable per-arch tag;
-  # the publish job then merges them into one multi-arch index with regctl.
-  # Everything is registry-protocol level (skopeo/regctl): no docker daemon,
-  # no docker load/tag/push hop, and images never leave blob identity.
+  # One job per native arch builds and pushes BOTH images (the flake app owns
+  # naming and tools); the publish job merges the per-arch tags into the
+  # multi-arch indexes. Registry-protocol level throughout: no docker daemon,
+  # no load hop, layer digests never change.
   docker-images:
-    name: image ${{ matrix.image }} (${{ matrix.system }})
+    name: images (${{ matrix.system }})
     needs: [check]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - image: docker-server
-            name: server
-            runner: ubuntu-latest
+          - runner: ubuntu-latest
             system: x86_64-linux
-          - image: docker-server
-            name: server
-            runner: ubuntu-24.04-arm
-            system: aarch64-linux
-          - image: docker-client
-            name: client
-            runner: ubuntu-latest
-            system: x86_64-linux
-          - image: docker-client
-            name: client
-            runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04-arm
             system: aarch64-linux
     runs-on: ${{ matrix.runner }}
     env:
-      ARCH: ${{ matrix.system }}
+      OWNER: ${{ github.repository_owner }}
+      PASSWORD: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: nix build -L ".#${{ matrix.image }}"
-      # Push the dockerTools tarball straight to ghcr under :<arch> — no
-      # daemon, no load hop, layer digests preserved as-is.
-      - name: Push per-arch image
-        env:
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          NAME: ${{ matrix.name }}
-          OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-          # Single-image source: arch/variant come from the image config,
-          # which the native build on this runner already set correctly.
-          nix shell nixpkgs#skopeo -c skopeo --insecure-policy copy \
-            --dest-creds "${OWNER,,}:${PASSWORD}" \
-            docker-archive:result \
-            "docker://ghcr.io/${OWNER,,}/zonepair-${NAME}:${ARCH}"
+      - run: nix run -L .#push-image -- "${{ matrix.system }}"
 
   publish-images:
     name: merge multi-arch index -> ghcr.io
@@ -134,29 +98,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - name: Compose index and tag
-        env:
-          OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME}"
-          host="reg=ghcr.io,user=${OWNER,,},pass=${PASSWORD},tls=enabled"
-          # `nix run nixpkgs#regctl` resolves mainProgram to `regclient` (the
-          # umbrella binary, absent from bin/) and fails; shell the package
-          # and invoke `regctl` directly.
-          rc=(nix shell nixpkgs#regclient -c regctl --host "$host")
-          for name in server client; do
-            repo="ghcr.io/${OWNER,,}/zonepair-${name}"
-            # Both per-arch tags point at images whose config blobs carry the
-            # right architecture (each was built natively on its runner), so
-            # regctl stamps the descriptors from the config itself.
-            "${rc[@]}" index create "$repo:$version" \
-              --ref "$repo:aarch64-linux" \
-              --ref "$repo:x86_64-linux"
-            # retag the index as :latest (image copy within a repo only
-            # rewrites the manifest, blobs are already there)
-            "${rc[@]}" image copy "$repo:$version" "$repo:latest"
-          done
+      - run: nix run -L .#merge-images -- "$GITHUB_REF_NAME"
 
   release:
     name: publish GitHub release
