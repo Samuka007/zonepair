@@ -22,9 +22,9 @@ and owns the session store.
 _Avoid_: daemon, relay (relay is what the pair collectively does)
 
 **stub-client**:
-The A-side process the SDK spawns instead of `claude`. Two faces: transport
-mode (long-lived stdio relay with mirror sync) and sess CLI (one-shot store
-RPC).
+The A-side process the SDK spawns instead of `claude`. Faces: transport
+mode (long-lived stdio relay with mirror sync), sess CLI (one-shot store
+RPC), and the setup/doctor/sync utilities.
 _Avoid_: proxy
 
 **stdio-v1**:
@@ -52,13 +52,15 @@ _Avoid_: raw listener, plain TCP, tcp mode
 
 **ws-line-v1**:
 The HTTP/WS listener surface: the store operations as plain HTTP endpoints,
-stdio-v1 re-framed as one text frame per protocol line, and the tunnel as a
-paired WS pump.
+and stdio-v1 re-framed as one text frame per protocol line.
 _Avoid_: v2, http mode (it is a second listener, not a replacement)
 
 **tunnel**:
 A pre-opened, A-initiated WS that carries one MCP JSON-RPC line per frame,
-paired with a B-loopback helper so tool execution happens on A.
+paired with a B-side helper so tool execution happens on A.
+_Superseded_: removed by ADR-0007 — the only MCP consumer was the stock-claude
+lab exhibit, which had no runner; production bridges tools over the stdio
+control channel instead.
 _Avoid_: reverse proxy, port forward
 
 **hello header**:
@@ -79,7 +81,8 @@ _Avoid_: branch, clone
 
 **tunnel side**:
 Which end of a paired WS connection initiates: side=a queues from machine A,
-side=b pairs from B's own loopback (the MCP helper claude spawns).
+side=b pairs from B's own loopback (the helper claude spawns).
+_Superseded_: removed by ADR-0007 with the tunnel itself.
 _Avoid_: upstream/downstream
 
 **wiring**:
@@ -106,5 +109,5 @@ _Avoid_: replication, backup
 
 **lab proof**:
 A driver mode that demonstrates a production question in miniature (e.g.
-`--mcp` proves A-side tool execution) without implying the production shape.
+`--mcp` proved A-side tool execution) without implying the production shape.
 _Avoid_: demo, experiment (they don't name the proven property)

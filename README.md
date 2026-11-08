@@ -103,21 +103,6 @@ ways to give it some:
 Sessions persist separately and already: the server pins the child's
 `CLAUDE_CONFIG_DIR` to the store (`/data/claude`, on the `stub-data` volume).
 
-## MCP lab proof (tool runs on A)
-
-```bash
-node driver/sdk-driver.mjs --real --mcp --label mcptool
-```
-
-Claude spawns a stdio MCP helper on B (its `--mcp-config` behaviour); the
-helper dials B's **own loopback** and gets paired with a pre-opened
-A-initiated tunnel, so the tool implementation (`driver/mini-mcp-server.mjs`)
-executes on A. The e2e proves it: claude reads `/work/secret.txt`, a file
-that exists only on A. `ENABLE_TOOL_SEARCH=false` is required (claude ≥
-2.1.316 otherwise hides MCP tools behind its ToolSearch meta tool). More
-tools: extend `TOOLS` in `mini-mcp-server.mjs`; more servers: one
-`mcpServers` entry + one queued tunnel each. Mechanism: ADR-0003.
-
 ## Manual poking
 
 ```bash
@@ -196,18 +181,13 @@ The login flow is intentionally not replaced — anything involving local
 | `CLAUDE_CONFIG_DIR` | stub-client sync, opencode | A-local mirror of B's store |
 | `CLAUDE_STUB_MIRROR` | stub-client | `1` enables push/pull sync around each relayed turn |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` | real e2e | provider wiring (set via wiring-env.py, not by hand) |
-| `ENABLE_TOOL_SEARCH` | MCP lab proof | must be `false`; see ADR-0003 |
 
 ## Layout
 
 ```
 src/bin/stub-server.rs   accept loop, sess RPC, ws-line-v1 listener, per-connection claude spawn + relay
-src/bin/stub-client.rs   transport mode (SDK-facing) + store mirror sync + sess CLI + tunnel helper
+src/bin/stub-client.rs   transport mode (SDK-facing) + store mirror sync + sess CLI
 src/                     proto (line framing), envf (allowlist), store (JSONL + fork), http, claudeproc
 tests/store.rs           fork/exists/messages/delete unit tests
-mock/                    mock claude (transcript-persisting), store verifier, wiring/mirror helpers
-driver/sdk-driver.mjs    SDK-side protocol driver used by all e2e suites
-driver/mini-mcp-server.mjs  zero-dependency stdio MCP server for the lab proof
-scripts/                 e2e runners, mirror-sync phase, no-dial assertion
-docker/                  mcp.json for the MCP lab proof (images are built by nix)
+scripts/                 e2e runners, no-dial assertion
 ```

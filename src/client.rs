@@ -58,11 +58,6 @@ impl Base {
         self.url("ws", "/v1/stdio")
     }
 
-    /// WS endpoint for the MCP tunnel pump.
-    pub fn tunnel_ws(&self, side: &str) -> String {
-        self.url("ws", &format!("/v1/tunnel?side={side}"))
-    }
-
     fn authority(&self) -> String {
         let rest = self.0.split_once("://").expect("parsed base").1;
         rest.split('/').next().unwrap_or_default().to_string()
@@ -126,11 +121,6 @@ impl Stdio {
             .context("sending stdin-eof")
     }
 
-    /// Send a raw text frame (used for the MCP tunnel pump bridging).
-    pub async fn send_raw(&mut self, line: &str) -> Result<()> {
-        self.tx.send(Message::Text(line.to_string())).await.context("sending frame")
-    }
-
     /// Next protocol line from the child. `None` when the stream closes.
     /// Transport control frames (`{"proto": …}`) are skipped: they are the
     /// carrier talking, not the protocol.
@@ -151,39 +141,6 @@ impl Stdio {
             }
         }
     }
-}
-
-pub enum Frame {
-    Text(String),
-    Closed,
-}
-
-pub async fn next_frame(rx: &mut WsRx) -> Result<Frame> {
-    loop {
-        match rx.next().await {
-            Some(Ok(Message::Text(t))) => return Ok(Frame::Text(t)),
-            Some(Ok(_)) => {}
-            Some(Err(e)) => return Err(e.into()),
-            None => return Ok(Frame::Closed),
-        }
-    }
-}
-
-/// Raw WS halves, for the tunnel pump (frames flow both ways, no framing).
-pub async fn open_tunnel_ws(
-    base: &Base,
-    side: &str,
-    token: Option<&str>,
-) -> Result<(WsTx, WsRx)> {
-    let mut request = base.tunnel_ws(side).into_client_request().context("bad ws url")?;
-    if let Some(t) = token {
-        let value = HeaderValue::from_str(&format!("Bearer {t}")).context("bad token header")?;
-        request.headers_mut().insert(AUTHORIZATION, value);
-    }
-    let (ws, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .with_context(|| format!("ws dial {}", base.tunnel_ws(side)))?;
-    Ok(ws.split())
 }
 
 // ---- session store over HTTP -------------------------------------------------

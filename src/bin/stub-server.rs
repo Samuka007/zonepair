@@ -1,7 +1,6 @@
 //! stub-server: runs on machine B. One HTTP/WS entry (the `ws-line-v1`
 //! carrier):
 //!   WS /v1/stdio                    -> spawn one claude process per connection
-//!   WS /v1/tunnel?side=a|b          -> paired MCP pump (A-initiated)
 //!   /v1/store/…                     -> session-store projection over HTTP
 //!
 //! Constraint enforced by construction: this binary only ever ACCEPTS
@@ -56,7 +55,6 @@ async fn main() -> Result<()> {
         log_dir: log_dir.clone(),
         token,
         seq: Arc::new(AtomicU64::new(0)),
-        tunnels: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
     };
 
     eprintln!(

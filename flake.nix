@@ -170,15 +170,9 @@
           # bins, so there is no separate mock package and no python/node in
           # any image.
 
-          # --- payload trees laid out at /opt inside the images -------------
-          serverOpt = pkgs.runCommand "zonepair-server-opt" { } ''
-            mkdir -p $out/opt
-            cp ${./docker/mcp.json} $out/opt/mcp.json
-          '';
-
           # --- OCI images built by nixpkgs dockerTools (no Dockerfile) -------
-          # /usr/local/bin/stub-{server,client} are symlinks into the store so
-          # the hardcoded paths in scripts/ and docker/mcp.json keep working.
+          # /usr/local/bin/stub-server is a symlink into the store so the
+          # hardcoded paths in scripts/ keep working.
           # Baseline every dockerTools image needs: /bin/sh, /usr/bin/env (so
           # `#!/usr/bin/env bash` shebangs resolve) and /etc/{passwd,group,
           # nsswitch.conf} (glibc reads nsswitch.conf to resolve names — without
@@ -207,11 +201,9 @@
               pkgs.dockerTools.caCertificates
             ];
             extraCommands = ''
-              mkdir -p usr/local/bin root tmp opt
+              mkdir -p usr/local/bin root tmp
               chmod 1777 tmp
-              cp -r ${serverOpt}/opt/. opt/
               ln -s ${stub}/bin/stub-server usr/local/bin/stub-server
-              ln -s ${stub}/bin/stub-client usr/local/bin/stub-client
             '';
             # No entrypoint script: stub-server reads STORE / LOG_DIR /
             # LISTEN / CLAUDE_CMD from the environment itself, so the image

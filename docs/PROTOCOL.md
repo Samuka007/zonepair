@@ -71,7 +71,6 @@ ADR-0002.
 | `POST /v1/store/sessions/{id}/fork` | HTTP JSON, body `{"upTo":uuid}` | `{"sessionId","pairs","messages"}` |
 | `DELETE /v1/store/sessions/{id}` | HTTP JSON | `{"deleted":bool}` |
 | `WS /v1/stdio` | text frame = one protocol line | first frame: hello `{"proto":"stdio-v1",argv,env,cwd}` → ack `{"ok":true}`; control frames use the `{"proto":...}` namespace (`stdin-eof` closes the child's stdin) |
-| `WS /v1/tunnel?side=a\|b` | text frame = one MCP JSON-RPC line | side=a queues (A-initiated), side=b pairs (B-loopback helper); ADR-0003 |
 
 Binary frames are a protocol violation (server warns and ignores). Optional
 `--http-token TOKEN` enforces `Authorization: Bearer` on every route — real
@@ -96,7 +95,7 @@ the RPC surface exists so machine A never touches B's filesystem.
 | --- | --- | --- |
 | C/S only — B never dials A (ADR-0001) | `stub-server` only `accept()`s; no outbound `connect` in the binary | `scripts/assert-nodial.sh` fails if the server owns any ESTAB connection whose local port is not the listen port (runs in both e2e suites) |
 | Multiple clients, one server | Every stdio connection gets its own `claude` child (argv/env/cwd from that connection's hello header); session RPC is stateless over a shared, mutex-guarded store | e2e runs 3 concurrent SDK drivers with distinct sessions through one server, plus 3 concurrent forks of one source |
-| Tools execute on A (ADR-0003) | production: `mcp__opencode__*` bridged over the stdio control channel; lab: paired tunnel pump | real-claude e2e reads a file that exists only on A |
+| Tools execute on A (ADR-0003) | `mcp__opencode__*` bridged over the stdio control channel; no MCP crosses the machine boundary (ADR-0007) | model turns in e2e execute tool calls against A-side implementations |
 
 ## Real-claude quirks handled
 
@@ -105,8 +104,6 @@ the RPC surface exists so machine A never touches B's filesystem.
 * `--verbose` stream-json re-emits `init`; the user turn is fed once.
 * tokio's `ChildStdin::shutdown()` only flushes, it does NOT close the pipe —
   real EOF for claude requires dropping the write end.
-* claude ≥ 2.1.316 hides MCP tools behind its ToolSearch meta tool unless
-  `ENABLE_TOOL_SEARCH=false`.
 * The server pins the child's `CLAUDE_CONFIG_DIR` to `--store` **after**
   merging the hello header env — a header carrying A's own value (e.g. the
   mirror dir) must not redirect where transcripts land.

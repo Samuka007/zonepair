@@ -1,25 +1,24 @@
-//! ws-line-v1 listener: HTTP/WS on one port, coexisting with the raw TCP
-//! listener. Frames on the WS streams are exactly one protocol line each
-//! (text frames only; binary is a protocol violation).
+//! ws-line-v1 listener: HTTP/WS on one port. Frames on the WS streams are
+//! exactly one protocol line each (text frames only; binary is a protocol
+//! violation).
 
 use crate::claudeproc;
 use crate::proto::{self, StdioHeader};
 use crate::store::Store;
 use anyhow::{Context, Result};
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path as AxPath, Query, State},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path as AxPath, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -28,13 +27,11 @@ pub struct AppState {
     pub log_dir: PathBuf,
     pub token: Option<String>,
     pub seq: Arc<AtomicU64>,
-    pub tunnels: Arc<Mutex<VecDeque<WebSocket>>>,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/stdio", get(stdio_ws))
-        .route("/v1/tunnel", get(tunnel_ws))
         .route(
             "/v1/store/sessions/:id",
             get(store_exists).delete(store_delete),
@@ -204,54 +201,6 @@ fn is_control_frame(frame: &str) -> bool {
     serde_json::from_str::<Value>(frame)
         .map(|v| v.get("proto").is_some())
         .unwrap_or(false)
-}
-
-// ---- MCP tunnel -------------------------------------------------------------
-
-async fn tunnel_ws(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-    ws: WebSocketUpgrade,
-) -> Response {
-    let side = params.get("side").cloned().unwrap_or_default();
-    ws.on_upgrade(move |socket| tunnel_socket(socket, side, state.tunnels))
-}
-
-async fn tunnel_socket(
-    mut ws: WebSocket,
-    side: String,
-    queue: Arc<Mutex<VecDeque<WebSocket>>>,
-) {
-    if side == "a" {
-        queue.lock().await.push_back(ws);
-        return;
-    }
-    let Some(mut a_stream) = queue.lock().await.pop_front() else {
-        let _ = ws.close().await;
-        return;
-    };
-    loop {
-        tokio::select! {
-            m = ws.recv() => match m {
-                Some(Ok(Message::Text(t))) => {
-                    if a_stream.send(Message::Text(t)).await.is_err() { break; }
-                }
-                Some(Ok(Message::Close(_))) | None => break,
-                Some(Ok(_)) => {}
-                Some(Err(_)) => break,
-            },
-            m = a_stream.recv() => match m {
-                Some(Ok(Message::Text(t))) => {
-                    if ws.send(Message::Text(t)).await.is_err() { break; }
-                }
-                Some(Ok(Message::Close(_))) | None => break,
-                Some(Ok(_)) => {}
-                Some(Err(_)) => break,
-            },
-        }
-    }
-    let _ = a_stream.close().await;
-    let _ = ws.close().await;
 }
 
 // ---- store (plain HTTP) -----------------------------------------------------

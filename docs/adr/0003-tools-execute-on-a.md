@@ -15,6 +15,11 @@ real claude: since `--mcp-config` forces claude to spawn a stdio MCP helper
 **on B**, the helper dials B's own loopback and gets paired with a
 pre-opened A-initiated tunnel, so the tool implementation runs on A.
 
+_Amended 2026-11-08_: the lab-proof mechanism (paired tunnel, spawned helper)
+is retired by ADR-0007. The boundary decision above stands; only its
+demonstration mechanism is gone, because nothing in the tree consumed MCP
+across machines anymore.
+
 ## Considered Options
 
 - **Direct B→A dial from the helper**: simplest, but violates ADR-0001.

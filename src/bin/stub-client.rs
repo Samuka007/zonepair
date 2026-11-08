@@ -49,7 +49,6 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("sess") => sess_cli(&args[1..]).await,
-        Some("tunnel") => tunnel_cli(&args[1..]).await,
         Some("sync") => sync_cli().await,
         Some("setup") => setup_cli(&args[1..]).await,
         Some("doctor") => doctor_cli(&args[1..]).await,
@@ -354,65 +353,6 @@ async fn transport(argv: &[String]) -> Result<()> {
     // Hard exit: the relay's job is done and machine A's stdin may still be
     // open. Tokio's Stdin worker is a blocking-pool thread parked in read(),
     // and a normal runtime shutdown would join it forever.
-    std::process::exit(0);
-}
-
-// ---- tunnel ------------------------------------------------------------------
-
-async fn tunnel_cli(args: &[String]) -> Result<()> {
-    let mut url: Option<String> = None;
-    let mut i = 0usize;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--url" => {
-                url = Some(args.get(i + 1).context("--url needs ws(s)://URL")?.clone());
-                i += 2;
-            }
-            other => bail!("unknown tunnel arg {other}; usage: tunnel --url ws://host[:port][/prefix]/v1/tunnel?side=b"),
-        }
-    }
-    let url = url.context("--url ws://URL required")?;
-
-    use futures_util::{SinkExt, StreamExt};
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    use tokio_tungstenite::tungstenite::Message;
-
-    let (mut tx, mut rx) = client::open_tunnel_ws(
-        &client::parse_base(&url)?,
-        if url.contains("side=b") { "b" } else { "a" },
-        token_from_env().as_deref(),
-    )
-    .await
-    .with_context(|| "ws connect for tunnel")?;
-
-    let mut stdout = tokio::io::stdout();
-    let up = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
-        let mut buf = String::new();
-        loop {
-            buf.clear();
-            match reader.read_line(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let line = buf.trim_end_matches('\n').to_string();
-                    if tx.send(Message::Text(line)).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-    while let Some(msg) = rx.next().await {
-        let line = match msg? {
-            Message::Text(t) => t,
-            _ => continue,
-        };
-        stdout.write_all(line.as_bytes()).await?;
-        stdout.write_all(b"\n").await?;
-        stdout.flush().await?;
-    }
-    up.abort();
-    // Same Stdin blocking-worker rationale as transport mode.
     std::process::exit(0);
 }
 
