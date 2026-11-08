@@ -32,3 +32,18 @@ Single-context: `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agent
 - Container e2e: build/loads the images, then execs the same Rust harness
   inside them (see `scripts/run-e2e-docker.sh`).
 
+## Rust dependencies
+
+- Add, remove, or move versions with `cargo add` / `cargo remove` /
+  `cargo upgrade`, never by hand-editing `Cargo.toml` version strings —
+  cargo is the only thing that talks to crates.io; a hand-written number is
+  a guess from memory. Background: issue #3's audit caught a wrong version
+  recalled from memory.
+- Before adopting a crate, check its docs.rs page for a maintenance-status
+  disclaimer (e.g. `home` declares itself Cargo-team-internal, "not
+  intended for external use"). Prefer `std` / `dirs` when the dedicated
+  crate disclaims external use.
+- Keep version strings at the loosest semver that builds (`"1"`, `"0.5"`):
+  `Cargo.lock` is the pin, `Cargo.toml` is the range. Outdated majors are
+  tracked in issue #3, not pinned away.
+
