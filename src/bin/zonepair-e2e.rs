@@ -686,12 +686,38 @@ async fn real_model_suite() {
 /// `doctor --url` must work with no `CLAUDE_STUB_URL` in the environment:
 /// `stub-client setup` invokes doctor with the URL as a flag, and requiring
 /// the env var first made the setup flow fail at its final step.
+///
+/// The doctor's opencode checks are also isolated from the host: a stub
+/// `opencode` on PATH answers `service get env OPENCODE_CLAUDE_PATH` with the
+/// client binary, so the check passes deterministically. Without this the
+/// suite's verdict depends on whether the host happens to have an opencode
+/// (and a configured server env) — a devshell with opencode 2.2.5 and no
+/// configured server made doctor exit 1 through no fault of the stub.
 async fn doctor_accepts_url(server: &Server) {
     let url = format!("ws://127.0.0.1:{}", server.port);
+    let workdir = tempdir();
+    let fake_bin = workdir.join("fake-opencode-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let fake = fake_bin.join("opencode");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *\"service get env OPENCODE_CLAUDE_PATH\"*) echo {};;\n  *\"--version\"*) echo \"opencode v2.2.5\";;\n  *) exit 0;;\nesac\n",
+            client_bin(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     let out = Command::new(client_bin())
         .args(["doctor", "--url", &url])
         .env_remove("CLAUDE_STUB_URL")
         .env_remove("CLAUDE_STUB_TOKEN")
+        .env("PATH", format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default()))
         .output();
     let out = match out {
         Ok(out) => out,
