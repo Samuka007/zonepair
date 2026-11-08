@@ -61,7 +61,14 @@ async fn main() -> Result<()> {
 const OPENCODE_MIN: (u64, u64, u64) = (2, 2, 3);
 
 fn mirror_default() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    // `home` is rust-lang's own home-dir resolution (cargo/rustup use it):
+    // $HOME on unix with a passwd fallback, %USERPROFILE% on windows. Hand
+    // rolling this produced a root-relative "/.claude-remote-mirror" on
+    // windows, where HOME is typically unset.
+    let home = home::home_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     format!("{home}/.claude-remote-mirror")
 }
 

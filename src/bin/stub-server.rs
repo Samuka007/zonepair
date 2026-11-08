@@ -40,7 +40,12 @@ async fn main() -> Result<()> {
     }
 
     let store = PathBuf::from(store.unwrap_or_else(|| {
-        format!("{}/.claude", std::env::var("HOME").unwrap_or_default())
+        // `home` resolves cross-platform (see stub-client's mirror_default).
+        let home = home::home_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        format!("{home}/.claude")
     }));
     let log_dir = log_dir.unwrap_or_else(|| std::env::current_dir().unwrap().join("stub-logs"));
     std::fs::create_dir_all(&log_dir)?;
