@@ -10,7 +10,7 @@ not guarantees.
   note on non-linux when no procfs data exists (same policy as an external
   server); the linux behavior is byte-identical. This was a hard failure on
   darwin: `socket_inodes` returns empty → `assert!(!inodes.is_empty())` panics.
-- `ci.yml` check job is now a matrix (ubuntu-latest + macos-14): every PR
+- `ci.yml` check job is now a matrix (ubuntu-latest + macos-15): every PR
   compiles and `cargo test`s on darwin — `checks.aarch64-darwin.default`
   builds `stub-darwin` and runs the suite with the skipped-attribution branch.
   actionlint clean.

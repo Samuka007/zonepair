@@ -34,7 +34,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             system: aarch64-linux
             package: stub-static
-          - runner: macos-14
+          - runner: macos-15
             system: aarch64-darwin
             package: stub-darwin
     runs-on: ${{ matrix.runner }}
