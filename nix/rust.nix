@@ -1,4 +1,4 @@
-{ lib, pkgs, system, product, toolchains, ... }:
+{ lib, pkgs, system, product, toolchains, config, ... }:
 let
   # musl static triple per host system — the portable release artifact.
   # Static linking is a linux/musl story: darwin has no musl target, and
@@ -110,4 +110,42 @@ in
     meta.platforms = [ "aarch64-darwin" ];
     extra.RUSTFLAGS = remap tcHost;
   };
+
+  # --- dynamic linux production build ------------------------------------------
+  # Maintained alongside the static release artifact — apt/deb packaging later
+  # wants the loader-interfacing glibc variant. Same production bins, dynamic
+  # link, host toolchain. Not a release asset; `nix flake check` keeps it green
+  # so the future deb input never rots.
+  packages.stub-linux = mkStub {
+    rustPlatform = toolchains.rustPlatformFrom pkgs tcHost;
+    bins = [
+      "stub-server"
+      "stub-client"
+    ];
+    meta.platforms = lib.platforms.linux;
+    extra.RUSTFLAGS = remap tcHost;
+  };
+
+  # --- release staging ----------------------------------------------------------
+  # dist/ with the published asset names. Linux stages the static musl pair
+  # (the portable release artifact); macOS stages its dynamic pair; the
+  # cross-built .exe stages from the windows package. Names are byte-stable
+  # across releases — consumers and the tag workflow both rely on them.
+  packages.release-dist =
+    let
+      pkg = if pkgs.stdenv.hostPlatform.isDarwin then config.packages.stub-darwin else config.packages.stub-static;
+    in
+    pkgs.runCommand "zonepair-release-dist" { } ''
+      mkdir -p $out/dist
+      install -m755 ${pkg}/bin/stub-server $out/dist/stub-server-${system}
+      install -m755 ${pkg}/bin/stub-client $out/dist/stub-client-${system}
+    '';
+
+  packages.release-dist-windows =
+    pkgs.runCommand "zonepair-release-dist-windows" { } ''
+      mkdir -p $out/dist
+      install -m755 \
+        ${config.packages.stub-client-windows}/bin/stub-client.exe \
+        $out/dist/stub-client-x86_64-windows.exe
+    '';
 }
