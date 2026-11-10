@@ -68,7 +68,7 @@ for TLS and auth. Why: ADR-0005.
 | `WS /v1/stdio` | text frame = one protocol line | first frame: hello `{"proto":"stdio-v1",argv,env,cwd}` → ack `{"ok":true}`; control frames use the `{"proto":...}` namespace (`stdin-eof` closes the child's stdin) |
 
 Binary frames are a protocol violation (server warns and ignores). Optional
-`--http-token TOKEN` enforces `Authorization: Bearer` on every route — real
+`--token TOKEN` enforces `Authorization: Bearer` on every route — real
 auth/TLS/device management is expected to come from the gateway in front.
 
 ## Session store format (projection backend)
