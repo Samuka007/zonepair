@@ -75,6 +75,17 @@ CI runs native checks on pushes and pull requests. Tags matching `v*`
 publish binaries and push the production images. The image matrix builds
 `x86_64-linux` and `aarch64-linux` natively, then merges them.
 Tags containing `-rc.` are marked as GitHub prereleases.
+
+CI pushes every store path it builds to the public `samuka007` Cachix cache,
+so `nix build` substitutes instead of compiling the fenix toolchain and
+crates. Add it to your `nix.conf` — the flake also declares it via
+`nixConfig`, and untrusted users get a trust prompt:
+
+```conf
+extra-substituters = https://samuka007.cachix.org
+extra-trusted-public-keys = samuka007.cachix.org-1:fywbWKGfnCfjhkNS8hHD9uAMm/91RGpeAl/iUijepcM=
+```
+
 Registry operations do not require a Docker daemon:
 
 ```bash

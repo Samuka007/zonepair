@@ -15,7 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v17
+        with:
+          name: samuka007
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
       - run: nix flake check -L
 
   # The flake stages the published asset names; the workflow only moves files
@@ -38,7 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v17
+        with:
+          name: samuka007
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
       - run: nix build -L .#release-dist --out-link release-dist
       - run: cp -rL release-dist/dist dist # deref the store symlink for upload
       - uses: actions/upload-artifact@v7
@@ -54,7 +62,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v17
+        with:
+          name: samuka007
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
       - run: nix build -L .#release-dist-windows --out-link release-dist
       - run: cp -rL release-dist/dist dist # deref the store symlink for upload
       - uses: actions/upload-artifact@v7
@@ -85,7 +97,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v17
+        with:
+          name: samuka007
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
       - run: nix run -L .#push-image -- "${{ matrix.system }}"
 
   publish-images:

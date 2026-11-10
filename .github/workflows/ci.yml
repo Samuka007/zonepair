@@ -28,7 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v17
+        with:
+          name: samuka007
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
       # Builds checks.default (cargo test) and evaluates every package/devShell.
       # On darwin this exercises the suite's non-procfs branches; no-dial
       # attribution is linux-only by design.
@@ -40,5 +44,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v17
+        with:
+          name: samuka007
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
       - run: nix develop -c cargo test --workspace

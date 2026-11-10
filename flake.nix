@@ -17,6 +17,15 @@
   outputs =
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
+      # Consumers substitute from the public Cachix cache; Nix asks
+      # untrusted users to accept this config before it takes effect.
+      flake.nixConfig = {
+        extra-substituters = [ "https://samuka007.cachix.org" ];
+        extra-trusted-public-keys = [
+          "samuka007.cachix.org-1:fywbWKGfnCfjhkNS8hHD9uAMm/91RGpeAl/iUijepcM="
+        ];
+      };
+
       systems = [
         "x86_64-linux"
         "aarch64-linux"
