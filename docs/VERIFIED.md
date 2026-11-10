@@ -3,6 +3,22 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-10 (part 2) - public Cachix cache
+
+- `ci.yml`/`release.yml` replaced `magic-nix-cache-action` (GitHub-internal
+  only, free tier EOL) with `cachix/cachix-action@v17` (cache `samuka007`,
+  `CACHIX_AUTH_TOKEN` secret). Fork PRs pull without pushing via
+  `skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}`.
+- `flake.nix` declares `flake.nixConfig` with the substituter and
+  `samuka007.cachix.org-1:fywbWKGfnCfjhkNS8hHD9uAMm/91RGpeAl/iUijepcM=`;
+  consumer instructions live in `docs/DEVELOPMENT.md` (Packaging).
+- Populate run [42812731074](https://github.com/Samuka007/zonepair/actions/runs/42812731074):
+  all 3 jobs green; post-phase pushed fenix toolchain components and both
+  `zonepair-0.1.0` outputs (x86_64-linux, aarch64-darwin).
+- Distribution proof: anonymous `GET /vhb624y5sgn8dm7cdajwqji1z9jx0hrn.narinfo`
+  on `samuka007.cachix.org` returned 200 with
+  `Sig: samuka007.cachix.org-1:...` - public read, signature present.
+
 ## 2026-11-10 — store HTTP framing and verification cleanup
 
 - Store requests now use reqwest 0.13 with the existing ring/rustls trust
