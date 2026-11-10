@@ -5,6 +5,7 @@ services:
     environment:
       TOKEN: ${B_TOKEN:-}
       CLAUDE_CMD: ${B_CLAUDE_CMD:-}
+      CLAUDE_CONFIG_DIR: /data/claude
     ports:
       - "${B_PUBLISH:-127.0.0.1:7789:7789}"
     volumes:
