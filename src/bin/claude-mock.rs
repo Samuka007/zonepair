@@ -28,12 +28,23 @@ fn session_id() -> String {
     arg("--session-id", "mock-session")
 }
 
+/// Fixed usage numbers the usage-tap suite asserts against. Also shapes the
+/// frames closer to real claude, which always carries `message.usage`.
+fn usage() -> Value {
+    json!({
+        "input_tokens": 11,
+        "output_tokens": 22,
+        "cache_creation_input_tokens": 3,
+        "cache_read_input_tokens": 5,
+    })
+}
+
 fn assistant(session: &str, blocks: Value) -> Value {
     json!({
         "type": "assistant",
         "session_id": session,
         "parent_tool_use_id": null,
-        "message": {"id": format!("msg-{session}"), "role": "assistant", "content": blocks},
+        "message": {"id": format!("msg-{session}"), "role": "assistant", "model": "mock-opus", "content": blocks, "usage": usage()},
     })
 }
 
@@ -128,6 +139,20 @@ fn tool_result_payload(content: &Value) -> String {
     }
 }
 
+fn result_frame(session: &str, num_turns: u64) -> Value {
+    json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "duration_ms": 42,
+        "num_turns": num_turns,
+        "cost_usd": 0.003,
+        "usage": usage(),
+        "session_id": session,
+        "result": "done",
+    })
+}
+
 fn main() {
     let session = session_id();
     emit(&json!({
@@ -180,7 +205,7 @@ fn main() {
                     json!({"type": "assistant", "message": {"id": format!("msg-{session}"), "role": "assistant", "content": [ack]}}),
                 ],
             );
-            emit(&json!({"type": "result", "subtype": "success", "session_id": session, "num_turns": 2, "result": "done"}));
+            emit(&result_frame(&session, 2));
             break;
         }
 
@@ -207,6 +232,6 @@ fn main() {
                 json!({"type": "assistant", "message": {"id": format!("msg-{session}"), "role": "assistant", "content": [ack]}}),
             ],
         );
-        emit(&json!({"type": "result", "subtype": "success", "session_id": session, "num_turns": 1, "result": "done"}));
+        emit(&result_frame(&session, 1));
     }
 }

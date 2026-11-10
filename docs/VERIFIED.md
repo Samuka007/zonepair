@@ -3,6 +3,30 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-10 (part 3) - client config file (ADR-0008)
+
+- `stub-client` relay knobs moved from the opencode service env to a
+  zonepair-owned TOML file (`dirs::config_dir()/zonepair/client.toml`, 0600,
+  atomic rename; `$ZONEPAIR_CLIENT_CONFIG` overrides the path). Resolution
+  order everywhere: flag > env > file > default. `setup` is interactive
+  (dialoguer) on a TTY or all-or-nothing with flags, and writes only
+  `OPENCODE_CLAUDE_PATH` + `CLAUDE_CONFIG_DIR` into the opencode env;
+  `unset` erases the file and the two keys. New deps via `cargo add`:
+  toml 0.9, dialoguer 0.12 (password only), dirs 7.
+- `cargo test`: unit tests 12/12 (4 new cfg store tests incl. the 0600
+  permission check), store 6/6, e2e green including the new
+  `setup_and_bare_shell` regression (strict flags, TTY gate, file-fed
+  bare-shell `sync`, token never echoed to stdout) and the trimmed
+  `unset_lifecycle` (file erase + two-key removal).
+- Real-pty smoke: interactive `setup` against a spawned stub-server — prompts
+  rendered with prefills, token input hidden, file written 0600, doctor
+  chained, exit 0; bare `stub-client sync` with a cleared environment
+  resolved everything from the file; partial-flag and non-TTY runs failed
+  loudly with nothing written.
+- `nix flake check -L` green (x86_64-linux; other systems delegated to CI's
+  native runners). Migration path for rc.5 installs documented in
+  docs/CLIENT.md.
+
 ## 2026-11-10 (part 2) - public Cachix cache
 
 - `ci.yml`/`release.yml` replaced `magic-nix-cache-action` (GitHub-internal

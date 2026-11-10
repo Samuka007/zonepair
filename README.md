@@ -85,6 +85,63 @@ docker compose exec -T b sh -c 'curl -fsS -H "Authorization: Bearer $TOKEN" http
 
 Expected: `{"ok":true,"sessions":[...]}`. These checks do not invoke Claude.
 
+## 6. Use it from machine A
+
+Machine A runs stock OpenCode plus the `stub-client` binary. All Claude
+traffic relays to machine B through the server URL; A never needs Claude
+credentials. OpenCode must be **≥ 2.2.3**.
+
+Download `stub-client-<system>` for your platform from
+[Releases](https://github.com/Samuka007/zonepair/releases)
+(`stub-client-x86_64-linux`, `stub-client-aarch64-linux`,
+`stub-client-aarch64-darwin`, `stub-client-x86_64-windows.exe`) and install
+it as `~/.local/bin/stub-client`. On macOS, remove the quarantine flag once
+after a browser download:
+`xattr -d com.apple.quarantine ~/.local/bin/stub-client`.
+
+Then configure. Interactive on a terminal — it asks for the server URL, the
+bearer token (hidden input; empty = none) and the mirror directory:
+
+```bash
+stub-client setup
+```
+
+Scripts pass all three flags together (`--token ""` for a tokenless server);
+partial flags fail without writing anything:
+
+```bash
+stub-client setup --url wss://zonepair.example.com \
+  --token "$(sed -n 's/^B_TOKEN=//p' .env)" \
+  --mirror "$HOME/.claude-remote-mirror"
+```
+
+Everything lands in the platform config directory at
+`zonepair/client.toml`, permissions 0600 (`~/.config/zonepair/client.toml`
+on Linux, `~/Library/Application Support/zonepair/client.toml` on macOS).
+`setup` also
+points OpenCode's server env at the stub, bootstraps a local mirror of B's
+session store, and runs a preflight — re-check anytime with
+`stub-client doctor --url <URL>`. Use OpenCode normally and pick the Claude
+Agent provider (`opencode auth login claude-agent`); `stub-client sync`
+re-synchronizes the mirror on demand, `stub-client unset` removes everything.
+Upgrading from a rc.5-or-earlier install:
+[docs/CLIENT.md](docs/CLIENT.md#migrating-from-rc5-and-earlier-installs).
+
+Alternative for a first try on one host: the published
+`ghcr.io/samuka007/zonepair-client` image bundles OpenCode and `stub-client`
+preconfigured (`CLAUDE_STUB_URL=ws://b:7789`). Run it on the same Compose
+network as `b` and pass the token through:
+
+```bash
+docker run --rm -it --network zonepair_default \
+  -e CLAUDE_STUB_TOKEN="$(sed -n 's/^B_TOKEN=//p' .env)" \
+  ghcr.io/samuka007/zonepair-client
+```
+
+(`zonepair_default` is the network Compose created for `b` — check the real
+name with `docker network ls`, it is `<directory>_default`.) The container
+keeps no volume: its OpenCode state is ephemeral.
+
 ## Persistent data
 
 `stub-data` stores sessions and configuration under `/data/claude`, plus

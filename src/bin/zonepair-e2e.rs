@@ -717,6 +717,7 @@ async fn doctor_accepts_url(server: &Server) {
         .args(["doctor", "--url", &url])
         .env_remove("CLAUDE_STUB_URL")
         .env_remove("CLAUDE_STUB_TOKEN")
+        .env_remove("ZONEPAIR_CLIENT_CONFIG")
         .env("PATH", format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default()))
         .output();
     let out = match out {
@@ -738,13 +739,184 @@ async fn doctor_accepts_url(server: &Server) {
     eprintln!("doctor --url ok");
 }
 
-/// `stub-client unset` (issue #4): removes exactly the environment `setup`
-/// writes plus a leftover `PROBE`, is idempotent, contacts no server, prints
-/// one removal line per key when opencode is absent, and fails loudly if
-/// opencode exists but a removal fails. The fake `opencode` on PATH models the
-/// service-env contract with a state file, so assertions run against what the
-/// environment then answers (`service get env KEY` prints the value) — not on
-/// which internal calls stub-client made. State file lives in a temp dir; the
+/// Fake `opencode` modelling the service-env contract with a state file (one
+/// `KEY=VALUE` per line): `service set/unset/get env KEY [VALUE]` mutate and
+/// read it, `service restart` is silent, `--version` answers v2.2.5. Args:
+/// `service <set|unset|get> env KEY [VALUE]`; `service get env KEY` prints the
+/// value — the external behavior assertions read through it.
+fn write_stateful_opencode(fake: &Path) {
+    std::fs::write(
+        fake,
+        "#!/bin/sh\nSTATE=\"$ZONEPAIR_FAKE_OC_STATE\"\ncase \"$1 $2 $3\" in\n  \"service set env\")\n    grep -v \"^$4=\" \"$STATE\" 2>/dev/null > \"$STATE.tmp\" || true\n    echo \"$4=$5\" >> \"$STATE.tmp\"; mv \"$STATE.tmp\" \"$STATE\"; exit 0;;\n  \"service unset env\")\n    grep -v \"^$4=\" \"$STATE\" 2>/dev/null > \"$STATE.tmp\" || true\n    mv \"$STATE.tmp\" \"$STATE\"; exit 0;;\n  \"service get env\")\n    grep \"^$4=\" \"$STATE\" 2>/dev/null | cut -d= -f2-\n    exit 0;;\n  \"service restart\")\n    exit 0;;\nesac\ncase \"$1\" in --version) echo \"opencode v2.2.5\";; esac\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// `stub-client setup` (ADR-0008): flag mode writes the client config file and
+/// exactly the two opencode keys; a fresh shell with no relay env runs `sync`
+/// purely from the file; partial flags and a no-flag run outside a TTY fail
+/// without writing anything.
+async fn setup_and_bare_shell(server: &Server) {
+    if server.child.is_none() {
+        eprintln!("  note: external server — setup flow skipped");
+        return;
+    }
+    let workdir = tempdir();
+    let fake_bin = workdir.join("fake-opencode-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let state = workdir.join("service-env.txt");
+    let fake = fake_bin.join("opencode");
+    write_stateful_opencode(&fake);
+    let client_abs: String = {
+        let cb = client_bin();
+        if cb.contains('/') {
+            cb
+        } else {
+            std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
+                .map(|dir| dir.join(&cb))
+                .find(|p| p.is_file())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| cb.clone())
+        }
+    };
+    let cfg_file = workdir.join("client.toml");
+    let mirror = workdir.join("mirror");
+    let url = format!("ws://127.0.0.1:{}", server.port);
+
+    let run_setup = |args: &[&str]| -> std::process::Output {
+        Command::new(&client_abs)
+            .args(["setup"])
+            .args(args)
+            .env_remove("CLAUDE_STUB_URL")
+            .env_remove("CLAUDE_STUB_TOKEN")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CLAUDE_STUB_MIRROR")
+            .env("ZONEPAIR_CLIENT_CONFIG", &cfg_file)
+            .env("ZONEPAIR_FAKE_OC_STATE", &state)
+            .env("PATH", format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default()))
+            .output()
+            .unwrap_or_else(|e| fail(&format!("spawn stub-client setup: {e}")))
+    };
+    let env_get = |key: &str| -> String {
+        let out = Command::new(&fake)
+            .args(["service", "get", "env", key])
+            .env("ZONEPAIR_FAKE_OC_STATE", &state)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    // Partial flags: loud failure, zero side effects — no file, no opencode env.
+    let out = run_setup(&["--url", &url]);
+    if out.status.success() {
+        fail("setup with partial flags must fail");
+    }
+    if cfg_file.exists() {
+        fail("partial setup must not write the client config file");
+    }
+    if !env_get("OPENCODE_CLAUDE_PATH").is_empty() {
+        fail("partial setup must not touch the opencode env");
+    }
+
+    // No flags outside a TTY (spawned pipes): loud failure, still nothing.
+    let out = run_setup(&[]);
+    if out.status.success() {
+        fail("no-flag setup outside a TTY must fail");
+    }
+    if !String::from_utf8_lossy(&out.stderr).contains("TTY") {
+        fail(&format!("no-flag setup error must name the TTY gate: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    if cfg_file.exists() {
+        fail("failed interactive setup must not write the client config file");
+    }
+
+    // Flag mode with an empty token: none stored, file + two keys written.
+    let out = run_setup(&["--url", &url, "--token", "", "--mirror", &mirror.display().to_string()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        fail(&format!("setup failed: {stdout}{}", String::from_utf8_lossy(&out.stderr)));
+    }
+    if !stdout.contains("opencode server env OPENCODE_CLAUDE_PATH=")
+        || !stdout.contains("opencode server env CLAUDE_CONFIG_DIR=")
+    {
+        fail(&format!("setup did not report the two opencode keys: {stdout}"));
+    }
+    if !stdout.contains("mirror bootstrap:") {
+        fail(&format!("mirror bootstrap did not run: {stdout}"));
+    }
+    let saved = std::fs::read_to_string(&cfg_file).unwrap();
+    assert!(
+        saved.contains(&format!("url = \"{url}\"")),
+        "client config missing url: {saved}"
+    );
+    assert!(saved.contains("mirror = true"), "client config missing mirror flag: {saved}");
+    assert!(!saved.contains("token ="), "empty token must be omitted: {saved}");
+    if env_get("OPENCODE_CLAUDE_PATH") != client_abs {
+        fail(&format!("wrong OPENCODE_CLAUDE_PATH: {:?}", env_get("OPENCODE_CLAUDE_PATH")));
+    }
+    if env_get("CLAUDE_CONFIG_DIR") != mirror.display().to_string() {
+        fail(&format!("wrong CLAUDE_CONFIG_DIR: {:?}", env_get("CLAUDE_CONFIG_DIR")));
+    }
+    if !env_get("CLAUDE_STUB_URL").is_empty() {
+        fail("setup must not write relay keys into the opencode env");
+    }
+    if !env_get("PROBE").is_empty() {
+        fail("setup must sweep the PROBE key");
+    }
+
+    // A fresh shell with no relay env: sync resolves everything from the file.
+    let out = Command::new(&client_abs)
+        .arg("sync")
+        .env_remove("CLAUDE_STUB_URL")
+        .env_remove("CLAUDE_STUB_TOKEN")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDE_STUB_MIRROR")
+        .env("ZONEPAIR_CLIENT_CONFIG", &cfg_file)
+        .output()
+        .unwrap_or_else(|e| fail(&format!("spawn stub-client sync: {e}")));
+    if !out.status.success() {
+        fail(&format!(
+            "bare-shell sync failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    if !String::from_utf8_lossy(&out.stdout).contains("sync ok") {
+        fail("bare-shell sync did not report ok");
+    }
+
+    // Flag mode with a token: stored in the file, never echoed to stdout.
+    let token = "e2e-secret-token-42";
+    let out = run_setup(&["--url", &url, "--token", token, "--mirror", &mirror.display().to_string()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        fail(&format!("token setup failed: {stdout}{}", String::from_utf8_lossy(&out.stderr)));
+    }
+    if stdout.contains(token) {
+        fail("setup echoed the token to stdout");
+    }
+    let saved = std::fs::read_to_string(&cfg_file).unwrap();
+    assert!(
+        saved.contains(&format!("token = \"{token}\"")),
+        "token missing from the client config: {saved}"
+    );
+
+    eprintln!("setup flow ok (strict flags, TTY gate, file store, two opencode keys, bare-shell sync)");
+}
+
+/// `stub-client unset` (issue #4): erases the client config file, removes
+/// exactly the two keys `setup` writes into the opencode env plus a leftover
+/// `PROBE`, is idempotent, contacts no server, prints one removal line per
+/// key when opencode is absent, and fails loudly if opencode exists but a
+/// removal fails. The fake `opencode` on PATH models the service-env contract
+/// with a state file, so assertions run against what the environment then
+/// answers (`service get env KEY` prints the value) — not on which internal
+/// calls stub-client made. State file and config file live in a temp dir; the
 /// host's real opencode env (if any) is untouched.
 async fn unset_lifecycle(server: &Server) {
     let workdir = tempdir();
@@ -771,19 +943,7 @@ async fn unset_lifecycle(server: &Server) {
         }
     };
     let fake = fake_bin.join("opencode");
-    // Args: service <set|unset|get> env KEY [VALUE]; state is one KEY=VALUE
-    // per line. `service get env KEY` prints the value — the external
-    // behavior assertions read through it.
-    std::fs::write(
-        &fake,
-        "#!/bin/sh\nSTATE=\"$ZONEPAIR_FAKE_OC_STATE\"\ncase \"$1 $2 $3\" in\n  \"service set env\")\n    grep -v \"^$4=\" \"$STATE\" 2>/dev/null > \"$STATE.tmp\" || true\n    echo \"$4=$5\" >> \"$STATE.tmp\"; mv \"$STATE.tmp\" \"$STATE\"; exit 0;;\n  \"service unset env\")\n    grep -v \"^$4=\" \"$STATE\" 2>/dev/null > \"$STATE.tmp\" || true\n    mv \"$STATE.tmp\" \"$STATE\"; exit 0;;\n  \"service get env\")\n    grep \"^$4=\" \"$STATE\" 2>/dev/null | cut -d= -f2-\n    exit 0;;\n  \"service restart\")\n    exit 0;;\nesac\ncase \"$1\" in --version) echo \"opencode v2.2.5\";; esac\nexit 0\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    write_stateful_opencode(&fake);
     let run_fake = |args: &[&str]| -> String {
         let out = Command::new(&fake)
             .args(args)
@@ -794,23 +954,28 @@ async fn unset_lifecycle(server: &Server) {
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
-    // Simulate a configured relay: the four keys setup writes, plus the PROBE
-    // a failed setup leaves behind.
+    // Simulate a configured relay: the two keys setup writes into the opencode
+    // env, plus the PROBE a failed setup leaves behind. Legacy CLAUDE_STUB_*
+    // keys are foreign state; unset does not touch them.
     for (k, v) in [
-        ("CLAUDE_STUB_URL", format!("ws://127.0.0.1:{}", server.port)),
         ("OPENCODE_CLAUDE_PATH", client_bin()),
         ("CLAUDE_CONFIG_DIR", workdir.join("mirror").display().to_string()),
-        ("CLAUDE_STUB_MIRROR", "1".to_string()),
         ("PROBE", "PROBE".to_string()),
     ] {
         run_fake(&["service", "set", "env", k, &v]);
     }
+    // A client config file from setup must be erased along with the env keys.
+    let cfg_file = workdir.join("client.toml");
+    std::fs::write(&cfg_file, "version = 1\nurl = \"ws://127.0.0.1:1\"\n").unwrap();
 
     let run_unset_with_path = |path: Option<std::path::PathBuf>| -> std::process::Output {
         let mut cmd = Command::new(&client_abs);
         cmd.arg("unset")
             .env_remove("CLAUDE_STUB_URL")
-            .env_remove("CLAUDE_STUB_TOKEN");
+            .env_remove("CLAUDE_STUB_TOKEN")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CLAUDE_STUB_MIRROR")
+            .env("ZONEPAIR_CLIENT_CONFIG", &cfg_file);
         match path {
             Some(p) => {
                 cmd.env("PATH", &p);
@@ -823,15 +988,16 @@ async fn unset_lifecycle(server: &Server) {
         cmd.output().unwrap_or_else(|e| fail(&format!("spawn stub-client unset: {e}")))
     };
 
-    // Happy path: every key removed, each confirmed on stdout, and the
-    // environment answers empty through `service get env` afterwards.
+    // Happy path: the config file erased, every env key removed, each
+    // confirmed on stdout, and the environment answers empty through
+    // `service get env` afterwards.
     let out = run_unset_with_path(None);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
         fail(&format!("unset failed: {stdout}{stderr}"));
     }
-    for key in ["CLAUDE_STUB_URL", "OPENCODE_CLAUDE_PATH", "CLAUDE_CONFIG_DIR", "CLAUDE_STUB_MIRROR", "PROBE"] {
+    for key in ["OPENCODE_CLAUDE_PATH", "CLAUDE_CONFIG_DIR", "PROBE"] {
         if !stdout.contains(&format!("removed {key}")) {
             fail(&format!("unset did not confirm removal of {key}: {stdout}"));
         }
@@ -840,13 +1006,19 @@ async fn unset_lifecycle(server: &Server) {
             fail(&format!("{key} still set after unset: {got}"));
         }
     }
+    if !stdout.contains(&format!("removed {}", cfg_file.display())) {
+        fail(&format!("unset did not report removing the client config: {stdout}"));
+    }
+    if cfg_file.exists() {
+        fail("client config file still present after unset");
+    }
 
     // Idempotent: a second run on the now-clean environment is a no-op.
     let out = run_unset_with_path(None);
     if !out.status.success() {
         fail(&format!("unset not idempotent: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
     }
-    eprintln!("unset lifecycle ok (removal, probe sweep, idempotent, env answers empty)");
+    eprintln!("unset lifecycle ok (file erase, removal, probe sweep, idempotent, env answers empty)");
 
     // No server contact: unset never opened a connection to the relay.
     if let Some(child) = &server.child {
@@ -861,7 +1033,7 @@ async fn unset_lifecycle(server: &Server) {
     if !out.status.success() {
         fail(&format!("unset fallback failed: {stdout}{}", String::from_utf8_lossy(&out.stderr)));
     }
-    for key in ["CLAUDE_STUB_URL", "OPENCODE_CLAUDE_PATH", "CLAUDE_CONFIG_DIR", "CLAUDE_STUB_MIRROR"] {
+    for key in ["OPENCODE_CLAUDE_PATH", "CLAUDE_CONFIG_DIR"] {
         if !stdout.contains(&format!("unset {key}")) {
             fail(&format!("unset fallback missing removal line for {key}: {stdout}"));
         }
@@ -908,6 +1080,7 @@ async fn run_suite() {
     let server = spawn_or_external().await;
     basic_turn(&server.base).await;
     doctor_accepts_url(&server).await;
+    setup_and_bare_shell(&server).await;
     unset_lifecycle(&server).await;
     tool_round_trip(&server.base).await;
     sess_rides_http(&server.base, &server).await;

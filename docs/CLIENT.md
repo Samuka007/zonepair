@@ -24,36 +24,41 @@ xattr -d com.apple.quarantine ~/.local/bin/stub-client
 
 ## Configure
 
-These variables are read by the opencode **server**, and the stub-client it
-spawns inherits the server's environment. Set them through opencode rather
-than your shell: the server is often started by its own daemon, which never
-sees your exports.
-
 ```bash
-opencode service set env OPENCODE_CLAUDE_PATH "$HOME/.local/bin/stub-client"
-opencode service set env CLAUDE_STUB_URL ws://b:7789
-opencode service set env CLAUDE_CONFIG_DIR "$HOME/.claude-remote-mirror"
-opencode service set env CLAUDE_STUB_MIRROR 1
+stub-client setup
 ```
 
-All four are what `stub-client setup` writes:
+Interactive on a terminal: prompts for the server URL, the bearer token
+(hidden input; empty = none), and the mirror directory — each prefilled with
+the currently resolved value. Scripts pass all three flags together; anything
+partial fails without writing anything:
 
 ```bash
-stub-client setup --url ws://b:7789
-stub-client doctor --url ws://b:7789
-stub-client unset
+stub-client setup --url wss://zonepair.example.com --token "$TOKEN" --mirror "$HOME/.claude-remote-mirror"
+stub-client setup --url ws://127.0.0.1:7789 --token "" --mirror "$HOME/.claude-remote-mirror"   # tokenless server
 ```
 
-`setup` creates and bootstraps the mirror, then runs doctor. `unset` removes
-the server environment (plus a leftover PROBE), restarts opencode, never
-contacts B, and leaves the mirror untouched. Without opencode on PATH it
-prints the removal commands.
+Values resolve as **flag > environment > client config file > built-in
+default**. The file lives in the platform config directory at
+`zonepair/client.toml` — `~/.config/zonepair/client.toml` on Linux
+(`$XDG_CONFIG_HOME` honored), `~/Library/Application
+Support/zonepair/client.toml` on macOS, `%APPDATA%\zonepair\client.toml` on
+Windows — with `$ZONEPAIR_CLIENT_CONFIG` overriding the whole path.
+Permissions are 0600, and it holds the relay knobs: server URL, bearer
+token, mirror dir, mirror switch.
+`setup` writes that file plus exactly two keys into the opencode **server's**
+environment — the only two opencode itself consumes: `OPENCODE_CLAUDE_PATH`
+(the provider knob) and `CLAUDE_CONFIG_DIR` (what the in-process store helpers
+read). It bootstraps the mirror from B's store, then runs `doctor`.
 
-`doctor` exists because the failure mode is silent: if the opencode server
-never sees `OPENCODE_CLAUDE_PATH`, opencode happily runs a local `claude` that
-talks to Anthropic directly — no relay, no error. It checks the endpoint's
-store RPC, that the server's `OPENCODE_CLAUDE_PATH` really points at a
-stub-client, that opencode is ≥ 2.2.3, and that the mirror is populated.
+`doctor --url URL` re-runs the preflight anytime. It checks the endpoint, the
+server's `OPENCODE_CLAUDE_PATH`, opencode's version, and the mirror — because
+the silent failure mode (opencode happily running a local `claude` straight at
+Anthropic, no relay, no error) is the one that costs an afternoon.
+
+`stub-client unset` erases the client config file, removes the two opencode
+keys, and restarts opencode. It never contacts B and leaves the mirror
+untouched. Without opencode on PATH it prints the removal commands.
 
 `opencode auth login claude-agent` (or `/connect`) records which method you
 chose; the actual Claude configuration lives entirely on B. The login flow
@@ -70,16 +75,36 @@ after it. To synchronize separately:
 stub-client sync
 ```
 
+## Migrating from rc.5-and-earlier installs
+
+Older setups stored the four relay variables in the opencode server env. The
+relay still honors environment variables — they outrank the client config
+file — so stale server-env keys keep shadowing the file until removed:
+
+```bash
+stub-client setup \
+  --url "$(opencode service get env CLAUDE_STUB_URL)" \
+  --token "$(opencode service get env CLAUDE_STUB_TOKEN)" \
+  --mirror "$(opencode service get env CLAUDE_CONFIG_DIR)"
+opencode service unset env CLAUDE_STUB_URL
+opencode service unset env CLAUDE_STUB_TOKEN
+opencode service unset env CLAUDE_STUB_MIRROR
+```
+
+`setup` rewrites `CLAUDE_CONFIG_DIR` itself, so the third flag only matters
+if you want to relocate the mirror while migrating.
+
 ## Environment reference
 
 | Variable | Meaning |
 | --- | --- |
-| `CLAUDE_STUB_URL` | Server base URL. `ws://` / `http://` for plain transport; `wss://` / `https://` for TLS, including gateway path prefixes |
-| `CLAUDE_STUB_TOKEN` | Bearer token matching the server's `TOKEN` |
-| `CLAUDE_STUB_MIRROR` | `1` enables push/pull sync around each relayed turn |
-| `CLAUDE_CONFIG_DIR` | A-local mirror of B's store |
+| `CLAUDE_STUB_URL` | Server base URL. `ws://` / `http://` for plain transport; `wss://` / `https://` for TLS, including gateway path prefixes. Overrides the file. |
+| `CLAUDE_STUB_TOKEN` | Bearer token matching the server's `TOKEN`. Overrides the file. |
+| `CLAUDE_STUB_MIRROR` | `1` forces push/pull sync around each relayed turn, regardless of the file's `mirror` flag. |
+| `CLAUDE_CONFIG_DIR` | A-local mirror of B's store. Opencode's SDK helpers read it from their process environment. |
 
-For a token-protected server, set `CLAUDE_STUB_TOKEN` in both the shell
-running setup/sync and the opencode server's environment.
+An empty/absent token at every layer means no `Authorization` header is sent;
+the server accepts that only when its own `TOKEN` is empty.
 
-See [server deployment](../README.md) and [protocol reference](PROTOCOL.md).
+See [server deployment](../README.md), [protocol reference](PROTOCOL.md),
+and [ADR-0008](adr/0008-client-config-file.md) for why the config file exists.

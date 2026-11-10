@@ -100,6 +100,14 @@ directions — around each turn automatically, or on demand via
 `stub-client sync`.
 _Avoid_: replication, backup
 
+**client config**:
+The A-side TOML file at `zonepair/client.toml` under the platform config
+directory (`ZONEPAIR_CLIENT_CONFIG` overrides the path) that owns
+stub-client's relay knobs — server URL, bearer token, mirror dir, mirror
+switch — resolved as flag > env > file > default (ADR-0008).
+_Avoid_: settings, preferences, opencode env (only `OPENCODE_CLAUDE_PATH`
+and `CLAUDE_CONFIG_DIR` live there)
+
 **lab proof**:
 A driver mode that demonstrates a production question in miniature (e.g.
 `--mcp` proved A-side tool execution) without implying the production shape.

@@ -17,31 +17,69 @@
 //! the Agent SDK's in-process store helpers work on the mirrored copy while
 //! the real store lives on B.
 //!
-//! `setup` / `doctor`: one-shot configuration and preflight for machine A
-//! (writes the four relay variables into the opencode **server's**
-//! environment; checks the endpoint, the server env, opencode's version and
-//! the mirror).
+//! `setup`: one-shot configuration for machine A. Interactive on a TTY —
+//! prompts for URL / token / mirror dir with the currently resolved values
+//! prefilled — or strict-flags non-interactively (`--url --token --mirror`
+//! all together, `--token ""` = no token; anything partial fails without
+//! writing). Stores the relay knobs in the client config file
+//! (`zonepair/client.toml` under the platform config dir, ADR-0008) and
+//! writes only the two keys
+//! opencode itself consumes into the opencode server env
+//! (`OPENCODE_CLAUDE_PATH`, `CLAUDE_CONFIG_DIR`).
+//!
+//! `doctor`: preflight — checks the endpoint, the opencode server env,
+//! opencode's version and the mirror.
 
 use anyhow::{bail, Context, Result};
-use claude_io_stub::{client, envf};
+use claude_io_stub::{cfg, client, envf};
 use serde_json::{json, Value};
 
-fn url_from_env() -> Result<client::Base> {
-    let raw = std::env::var("CLAUDE_STUB_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .context("CLAUDE_STUB_URL (e.g. ws://b:7789 or http://gateway.example/zonepair) is required")?;
-    client::parse_base(&raw)
+// ---- config resolution -------------------------------------------------------
+// One order everywhere: flag > process env > client config file > built-in
+// default (ADR-0008). The opencode server env is NOT a read source — only the
+// two keys opencode itself consumes live there, written by `setup`.
+
+fn nonempty(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.is_empty())
 }
 
-fn token_from_env() -> Option<String> {
-    std::env::var("CLAUDE_STUB_TOKEN").ok().filter(|v| !v.is_empty())
+fn resolve_url(flag: Option<String>) -> Result<String> {
+    if let Some(v) = nonempty(flag) {
+        return Ok(v);
+    }
+    if let Some(v) = nonempty(std::env::var("CLAUDE_STUB_URL").ok()) {
+        return Ok(v);
+    }
+    let file = cfg::load()?;
+    if let Some(v) = nonempty(file.url) {
+        return Ok(v);
+    }
+    bail!(
+        "no CLAUDE_STUB_URL: pass --url, export CLAUDE_STUB_URL, or run `stub-client setup` (it writes {})",
+        cfg::path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "the client config file".to_string())
+    );
 }
 
-fn mirror_from_env() -> Result<std::path::PathBuf> {
-    std::env::var("CLAUDE_CONFIG_DIR")
-        .context("CLAUDE_CONFIG_DIR (A-local mirror of B's store) is required for sync")
-        .map(std::path::PathBuf::from)
+fn resolve_token(flag: Option<String>) -> Option<String> {
+    nonempty(flag)
+        .or_else(|| nonempty(std::env::var("CLAUDE_STUB_TOKEN").ok()))
+        .or_else(|| cfg::load().ok().and_then(|c| nonempty(c.token)))
+}
+
+fn resolve_mirror_dir(flag: Option<String>) -> String {
+    nonempty(flag)
+        .or_else(|| nonempty(std::env::var("CLAUDE_CONFIG_DIR").ok()))
+        .or_else(|| cfg::load().ok().and_then(|c| nonempty(c.mirror_dir)))
+        .unwrap_or_else(mirror_default)
+}
+
+fn mirror_enabled() -> bool {
+    if std::env::var("CLAUDE_STUB_MIRROR").is_ok_and(|v| v == "1") {
+        return true;
+    }
+    cfg::load().map(|c| c.mirror.unwrap_or(false)).unwrap_or(false)
 }
 
 #[tokio::main]
@@ -49,7 +87,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("sess") => sess_cli(&args[1..]).await,
-        Some("sync") => sync_cli().await,
+        Some("sync") => sync_cli(&args[1..]).await,
         Some("setup") => setup_cli(&args[1..]).await,
         Some("unset") => unset_cli(&args[1..]).await,
         Some("doctor") => doctor_cli(&args[1..]).await,
@@ -62,29 +100,24 @@ async fn main() -> Result<()> {
 const OPENCODE_MIN: (u64, u64, u64) = (2, 2, 3);
 
 fn mirror_default() -> String {
-    // std::env::home_dir was un-deprecated in 1.85 and its windows behavior
-    // fixed (USERPROFILE-first); hand rolling this produced a root-relative
-    // "/.claude-remote-mirror" on windows, where HOME is typically unset.
-    // unwrap_or_default keeps the arg/env overrides able to rescue an
-    // exotic environment, same as before.
-    let home = std::env::home_dir()
+    // dirs::home_dir is USERPROFILE-first on windows, where HOME is typically
+    // unset — hand rolling this once produced a root-relative
+    // "/.claude-remote-mirror" there. unwrap_or_default keeps the flag/env
+    // overrides able to rescue an exotic environment, same as before.
+    let home = dirs::home_dir()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
     format!("{home}/.claude-remote-mirror")
 }
 
-/// The variables the relay needs in the **opencode server's** environment.
-/// A shell export is not enough: opencode usually runs as a daemon that never
-/// sees the caller's shell, and stub-client is spawned by that server.
-fn desired_server_env(url: &str, mirror: &str, exe: &str) -> Vec<(&'static str, String)> {
-    vec![
-        ("CLAUDE_STUB_URL", url.to_string()),
-        ("OPENCODE_CLAUDE_PATH", exe.to_string()),
-        ("CLAUDE_CONFIG_DIR", mirror.to_string()),
-        ("CLAUDE_STUB_MIRROR", "1".to_string()),
-    ]
-}
+/// The only keys setup writes into the **opencode server's** environment: the
+/// two opencode itself consumes (the provider path and the mirror dir its
+/// in-process SDK helpers read). The relay's own knobs live in the client
+/// config file (ADR-0008); the server env is not a read source. A shell export
+/// is not enough either way: opencode usually runs as a daemon that never sees
+/// the caller's shell, and stub-client is spawned by that server.
+const OPENCODE_ENV_KEYS: [&str; 2] = ["OPENCODE_CLAUDE_PATH", "CLAUDE_CONFIG_DIR"];
 
 /// Parse `opencode --version` ("opencode v2.2.5") into a comparable triple.
 fn parse_version(out: &str) -> Option<(u64, u64, u64)> {
@@ -99,28 +132,92 @@ fn parse_version(out: &str) -> Option<(u64, u64, u64)> {
 }
 
 async fn setup_cli(args: &[String]) -> Result<()> {
-    let mut url = std::env::var("CLAUDE_STUB_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "ws://127.0.0.1:7789".to_string());
-    let mut mirror = std::env::var("CLAUDE_CONFIG_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(mirror_default);
+    let mut flags: [Option<String>; 3] = [None, None, None]; // url, token, mirror
     let mut i = 0usize;
     while i < args.len() {
-        match args[i].as_str() {
-            "--url" => {
-                url = args.get(i + 1).context("--url needs URL")?.clone();
-                i += 2;
-            }
-            "--mirror" => {
-                mirror = args.get(i + 1).context("--mirror needs DIR")?.clone();
-                i += 2;
-            }
-            other => bail!("unknown setup arg {other}; usage: setup [--url URL] [--mirror DIR]"),
-        }
+        let slot = match args[i].as_str() {
+            "--url" => 0,
+            "--token" => 1,
+            "--mirror" => 2,
+            other => bail!(
+                "unknown setup arg {other}; usage: setup [--url URL --token TOKEN --mirror DIR] (all together, --token \"\" = none) | no args: interactive"
+            ),
+        };
+        flags[slot] = Some(
+            args.get(i + 1)
+                .context("--url/--token/--mirror need values")?
+                .clone(),
+        );
+        i += 2;
     }
+    let [url_f, token_f, mirror_f] = flags;
+    let given = [url_f.is_some(), token_f.is_some(), mirror_f.is_some()]
+        .into_iter()
+        .filter(|given| *given)
+        .count();
+
+    let (url, token_raw, mirror_dir) = match given {
+        0 => {
+            // Interactive. Refuse without a TTY so scripts fail loudly instead
+            // of hanging on a hidden prompt.
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                bail!(
+                    "interactive setup needs a TTY; pass all of --url URL --token TOKEN --mirror DIR (empty token: --token \"\")"
+                );
+            }
+            let theme = dialoguer::theme::ColorfulTheme::default();
+            let url: String = dialoguer::Input::with_theme(&theme)
+                .with_prompt("stub-server URL")
+                .default(resolve_url(None).unwrap_or_else(|_| "ws://127.0.0.1:7789".to_string()))
+                .interact_text()
+                .context("url prompt")?;
+            let current_token = resolve_token(None).unwrap_or_default();
+            let token_raw = if current_token.is_empty() {
+                dialoguer::Password::new()
+                    .with_prompt("Bearer token (empty = none)")
+                    .allow_empty_password(true)
+                    .report(false)
+                    .interact()
+                    .context("token prompt")?
+            } else {
+                let entered = dialoguer::Password::new()
+                    .with_prompt("Bearer token (empty = keep current)")
+                    .allow_empty_password(true)
+                    .report(false)
+                    .interact()
+                    .context("token prompt")?;
+                if entered.is_empty() { current_token } else { entered }
+            };
+            let mirror_dir: String = dialoguer::Input::with_theme(&theme)
+                .with_prompt("Mirror directory (A-local copy of B's store)")
+                .default(resolve_mirror_dir(None))
+                .interact_text()
+                .context("mirror prompt")?;
+            (url, token_raw, mirror_dir)
+        }
+        3 => (url_f.unwrap(), token_f.unwrap(), mirror_f.unwrap()),
+        _ => bail!(
+            "setup is all-or-nothing: pass --url, --token (may be \"\") and --mirror together, or nothing for interactive setup"
+        ),
+    };
+
+    // Validate before the first side effect: nothing is written unless the URL
+    // parses and all three values are present.
+    let base = client::parse_base(&url)?;
+    let token = nonempty(Some(token_raw));
+
+    // Our store first, then the two opencode keys.
+    let written = cfg::save(&cfg::ClientConfig {
+        url: Some(url.clone()),
+        token: token.clone(),
+        mirror_dir: Some(mirror_dir.clone()),
+        mirror: Some(true),
+        ..Default::default()
+    })?;
+    println!("client config {}", written.display());
+
+    std::fs::create_dir_all(&mirror_dir).with_context(|| format!("creating mirror dir {mirror_dir}"))?;
 
     let exe = std::env::current_exe()
         .context("resolving our own path")?
@@ -128,24 +225,25 @@ async fn setup_cli(args: &[String]) -> Result<()> {
         .context("canonicalizing our own path")?
         .to_string_lossy()
         .to_string();
-
-    std::fs::create_dir_all(&mirror).with_context(|| format!("creating mirror dir {mirror}"))?;
-
-    // Prefer the server env: it is what the daemon-spawned stub-client inherits.
-    // `service set env NAME VALUE` — the key is the literal string "env" and the
-    // variable name is the second argument.
+    // Presence probe: `service set env PROBE PROBE` proves an opencode with a
+    // working `service` subcommand is on PATH. `service set env NAME VALUE` —
+    // the key is the literal string "env" and the variable name is the second
+    // argument.
     let probe = std::process::Command::new("opencode")
         .args(["service", "set", "env", "PROBE", "PROBE"])
         .output();
     match probe {
         Ok(_) => {
-            for (key, value) in desired_server_env(&url, &mirror, &exe) {
-                let status = std::process::Command::new("opencode")
-                    .args(["service", "set", "env", key, &value])
-                    .status()
+            for (key, value) in [("OPENCODE_CLAUDE_PATH", &exe), ("CLAUDE_CONFIG_DIR", &mirror_dir)] {
+                // Capture output: opencode's subcommands are chatty on stdout
+                // (`service restart` prints its listen URL) and would
+                // otherwise pollute our transcript.
+                let out = std::process::Command::new("opencode")
+                    .args(["service", "set", "env", key, value])
+                    .output()
                     .with_context(|| format!("opencode service set env {key}"))?;
-                if !status.success() {
-                    bail!("opencode service set env {key} failed ({status}); set it by hand");
+                if !out.status.success() {
+                    bail!("opencode service set env {key} failed ({:?}); set it by hand", out.status.code());
                 }
                 println!("opencode server env {key}={value}");
             }
@@ -153,45 +251,53 @@ async fn setup_cli(args: &[String]) -> Result<()> {
             // environment up.
             let _ = std::process::Command::new("opencode")
                 .args(["service", "unset", "env", "PROBE"])
-                .status();
-            let _ = std::process::Command::new("opencode").args(["service", "restart"]).status();
+                .output();
+            let _ = std::process::Command::new("opencode").arg("service").arg("restart").output();
         }
         Err(_) => {
             println!("opencode not on PATH — export these in whatever starts it:");
-            for (key, value) in desired_server_env(&url, &mirror, &exe) {
-                println!("  export {key}={value}");
-            }
+            println!("  export OPENCODE_CLAUDE_PATH={exe}");
+            println!("  export CLAUDE_CONFIG_DIR={mirror_dir}");
         }
     }
 
     // Bootstrap the mirror so opencode's in-process store helpers start from
     // B's real state rather than an empty directory.
-    let base = client::parse_base(&url)?;
-    match client::sync_mirror(&base, token_from_env().as_deref(), std::path::Path::new(&mirror)).await {
+    match client::sync_mirror(&base, token.as_deref(), std::path::Path::new(&mirror_dir)).await {
         Ok((pushed, pulled)) => println!("mirror bootstrap: pushed {pushed} line(s), pulled {pulled} line(s)"),
-        Err(e) => println!("mirror bootstrap skipped: {e:#}"),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("401") && token.is_none() {
+                println!("mirror bootstrap skipped: {msg} — the server requires a token; re-run setup and enter one");
+            } else {
+                println!("mirror bootstrap skipped: {msg}");
+            }
+        }
     }
 
     println!();
-    doctor_cli(&["--url".to_string(), url.clone(), "--mirror".to_string(), mirror.clone()]).await
+    doctor_cli(&["--url".to_string(), url.clone(), "--mirror".to_string(), mirror_dir.clone()]).await
 }
 
-/// Reverse of `setup` (issue #4): remove exactly the environment setup writes,
-/// plus the `PROBE` probe key a failed setup can leave behind, then restart so
-/// a running daemon stops inheriting the relay environment. Takes no `--url`
-/// and dials nothing — decommissioning B must not depend on B answering — and
-/// never chains into `doctor`, which legitimately reports the now-missing
-/// `OPENCODE_CLAUDE_PATH` as a problem. The mirror directory is user data and
-/// is read nowhere here.
+/// Reverse of `setup`: erase the client config file and remove exactly the two
+/// keys opencode itself consumes (plus the `PROBE` probe key a failed setup
+/// can leave behind), then restart so a running daemon stops inheriting them.
+/// Takes no `--url` and dials nothing — decommissioning B must not depend on B
+/// answering. Legacy `CLAUDE_STUB_*` keys in the opencode server env predate
+/// the client config file; migration is manual (docs/CLIENT.md) and `unset`
+/// does not touch them. The mirror directory is user data and is read nowhere
+/// here.
 async fn unset_cli(args: &[String]) -> Result<()> {
     if let Some(other) = args.first() {
         bail!("unknown unset arg {other}; usage: unset");
     }
-    // Removal targets derive from the same source of truth setup writes: a
-    // future fifth key added to `desired_server_env` is swept here for free.
-    let keys: Vec<&'static str> =
-        desired_server_env("", "", "").into_iter().map(|(k, _)| k).collect();
-
+    // The config file is ours; erase it before touching opencode so a failed
+    // opencode step leaves a consistent, retryable "no config" state.
+    match cfg::erase() {
+        Ok(true) => println!("removed {}", cfg::path()?.display()),
+        Ok(false) => {}
+        Err(e) => bail!("removing the client config failed: {e}"),
+    }
     // Presence probe, same trick as setup: setting PROBE proves an opencode
     // with a working `service` subcommand is on PATH. If a later removal fails
     // midway, PROBE lingers exactly like after a failed setup — re-running
@@ -201,7 +307,7 @@ async fn unset_cli(args: &[String]) -> Result<()> {
         .output();
     match probe {
         Ok(_) => {
-            for key in &keys {
+            for key in OPENCODE_ENV_KEYS {
                 let status = std::process::Command::new("opencode")
                     .args(["service", "unset", "env", key])
                     .status()
@@ -219,11 +325,11 @@ async fn unset_cli(args: &[String]) -> Result<()> {
                 bail!("opencode service unset env PROBE failed ({status})");
             }
             println!("removed PROBE");
-            let _ = std::process::Command::new("opencode").args(["service", "restart"]).status();
+            let _ = std::process::Command::new("opencode").arg("service").arg("restart").output();
         }
         Err(_) => {
             println!("opencode not on PATH — unset these in whatever starts it:");
-            for key in &keys {
+            for key in OPENCODE_ENV_KEYS {
                 println!("  unset {key}");
             }
         }
@@ -263,7 +369,7 @@ async fn doctor_cli(args: &[String]) -> Result<()> {
     println!("stub-client doctor  ({url})");
 
     // 1. the endpoint answers session-store HTTP at all
-    let token = token_from_env();
+    let token = resolve_token(None);
     match client::store_list(&base, token.as_deref()).await {
         Ok(sessions) => println!("  ok    store reachable ({} session(s) on B)", sessions.len()),
         Err(e) => bad(format!("store unreachable: {e:#}")),
@@ -346,14 +452,15 @@ fn stdio_header(argv: &[String]) -> Value {
 }
 
 async fn transport(argv: &[String]) -> Result<()> {
-    let base = url_from_env()?;
-    let token = token_from_env();
+    let base = client::parse_base(&resolve_url(None)?)?;
+    let token = resolve_token(None);
 
     // Mirror push before the turn (ADR-0004): deliver A-side forks to B, so a
     // resume/fork created by opencode's in-process SDK helpers is visible to
-    // the claude child on B.
-    if std::env::var("CLAUDE_STUB_MIRROR").is_ok_and(|v| v == "1") {
-        let mirror = mirror_from_env()?;
+    // the claude child on B. Enabled by CLAUDE_STUB_MIRROR=1 or the client
+    // config file's `mirror` flag.
+    if mirror_enabled() {
+        let mirror = std::path::PathBuf::from(resolve_mirror_dir(None));
         client::sync_mirror(&base, token.as_deref(), &mirror)
             .await
             .context("mirror push before relay")?;
@@ -410,8 +517,8 @@ async fn transport(argv: &[String]) -> Result<()> {
     // Post-turn pull, so opencode's next in-process store read sees the
     // messages the turn just wrote on B. Best-effort: the model reply is
     // already delivered; failing it now would only destroy a completed turn.
-    if std::env::var("CLAUDE_STUB_MIRROR").is_ok_and(|v| v == "1") {
-        let mirror = mirror_from_env()?;
+    if mirror_enabled() {
+        let mirror = std::path::PathBuf::from(resolve_mirror_dir(None));
         if let Err(e) = client::sync_mirror(&base, token.as_deref(), &mirror).await {
             eprintln!("stub-client: mirror pull after relay failed: {e:#}");
         }
@@ -425,15 +532,14 @@ async fn transport(argv: &[String]) -> Result<()> {
 // ---- sess ---------------------------------------------------------------------
 
 async fn sess_cli(args: &[String]) -> Result<()> {
-    let mut url = std::env::var("CLAUDE_STUB_URL").ok();
+    let mut url_flag = None;
     let mut index = 0usize;
     if args.first().map(String::as_str) == Some("--url") {
-        url = Some(args.get(1).context("--url needs URL")?.clone());
+        url_flag = Some(args.get(1).context("--url needs URL")?.clone());
         index = 2;
     }
-    let url = url.filter(|v| !v.is_empty()).context("CLAUDE_STUB_URL or --url required")?;
-    let base = client::parse_base(&url)?;
-    let token = token_from_env();
+    let base = client::parse_base(&resolve_url(url_flag)?)?;
+    let token = resolve_token(None);
 
     let op = args.get(index).context("missing sess op (exists|messages|fork|delete|list|merge)")?;
     let need = |n: usize, what: &str| -> Result<&String> {
@@ -489,10 +595,13 @@ async fn sess_cli(args: &[String]) -> Result<()> {
 
 // ---- sync ---------------------------------------------------------------------
 
-async fn sync_cli() -> Result<()> {
-    let base = url_from_env()?;
-    let mirror = mirror_from_env()?;
-    let (pushed, pulled) = client::sync_mirror(&base, token_from_env().as_deref(), &mirror).await?;
+async fn sync_cli(args: &[String]) -> Result<()> {
+    if let Some(other) = args.first() {
+        bail!("unknown sync arg {other}; sync resolves URL/token/mirror from the environment and the client config file");
+    }
+    let base = client::parse_base(&resolve_url(None)?)?;
+    let mirror = std::path::PathBuf::from(resolve_mirror_dir(None));
+    let (pushed, pulled) = client::sync_mirror(&base, resolve_token(None).as_deref(), &mirror).await?;
     println!("sync ok: pushed {pushed} line(s), pulled {pulled} line(s)");
     Ok(())
 }

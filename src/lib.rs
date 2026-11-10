@@ -1,5 +1,6 @@
 //! Shared protocol, env filtering and session-store code for the stub pair.
 
+pub mod cfg;
 pub mod claudeproc;
 pub mod client;
 pub mod http;
