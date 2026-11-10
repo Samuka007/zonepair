@@ -2,19 +2,23 @@
 //! for the session store. This is the only way a client talks to the server;
 //! there is no raw-TCP path.
 //!
-//! TLS is terminated by the gateway in front (ADR-0005), so this module dials
-//! plain `ws://` / `http://`. `wss://` / `https://` parse but are rejected
-//! until the client speaks TLS.
+//! TLS: a `wss://` / `https://` base URL makes the client itself speak TLS
+//! (rustls, webpki-roots) to the gateway edge — cloudflare tunnel, nginx, any
+//! ADR-0005 terminator. Behind the gateway the carrier stays plain
+//! `ws://` / `http://`; direct and loopback deployments keep dialing those.
 
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::{Arc, LazyLock};
 use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::Connector;
 
 type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 pub type WsTx = futures_util::stream::SplitSink<WsStream, Message>;
@@ -30,11 +34,7 @@ pub fn parse_base(raw: &str) -> Result<Base> {
         bail!("CLAUDE_STUB_URL must include a scheme (ws:// or http://), got {raw:?}");
     };
     match scheme {
-        "ws" | "http" => {}
-        "wss" | "https" => bail!(
-            "{scheme}:// needs a TLS client, which the stub does not speak yet; \
-             dial ws:// or http:// behind your gateway"
-        ),
+        "ws" | "http" | "wss" | "https" => {}
         other => bail!("unknown scheme {other:?} in CLAUDE_STUB_URL"),
     }
     if rest.is_empty() {
@@ -53,9 +53,13 @@ impl Base {
         format!("{scheme}://{rest}{path}")
     }
 
-    /// WS endpoint carrying stdio-v1.
+    /// WS endpoint carrying stdio-v1. A TLS base dials `wss://`.
     pub fn stdio_ws(&self) -> String {
-        self.url("ws", "/v1/stdio")
+        self.url(if self.is_tls() { "wss" } else { "ws" }, "/v1/stdio")
+    }
+
+    fn is_tls(&self) -> bool {
+        self.0.starts_with("https://") || self.0.starts_with("wss://")
     }
 
     fn authority(&self) -> String {
@@ -71,6 +75,25 @@ pub struct Stdio {
     pub rx: WsRx,
 }
 
+/// Shared rustls client config (webpki-roots: no system trust store needed,
+/// which is what keeps the musl static build self-contained).
+fn tls_config() -> Arc<rustls::ClientConfig> {
+    static CONFIG: LazyLock<Arc<rustls::ClientConfig>> = LazyLock::new(|| {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    });
+    CONFIG.clone()
+}
+
+fn ws_connector() -> Connector {
+    Connector::Rustls(tls_config())
+}
+
 /// Dial `/v1/stdio`, send the hello header and consume the ack.
 pub async fn open_stdio(base: &Base, header: &Value, token: Option<&str>) -> Result<Stdio> {
     let mut request = base.stdio_ws().into_client_request().context("bad ws url")?;
@@ -78,9 +101,14 @@ pub async fn open_stdio(base: &Base, header: &Value, token: Option<&str>) -> Res
         let value = HeaderValue::from_str(&format!("Bearer {t}")).context("bad token header")?;
         request.headers_mut().insert(AUTHORIZATION, value);
     }
-    let (ws, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .with_context(|| format!("ws dial {}", base.stdio_ws()))?;
+    let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        false,
+        Some(ws_connector()),
+    )
+    .await
+    .with_context(|| format!("ws dial {}", base.stdio_ws()))?;
     let (mut tx, mut rx) = ws.split();
 
     tx.send(Message::Text(header.to_string().into()))
@@ -147,6 +175,82 @@ impl Stdio {
 
 // ---- session store over HTTP -------------------------------------------------
 
+/// The store HTTP request rides either a plain TCP connection or a rustls
+/// TLS stream, chosen by the base URL scheme.
+enum HttpStream {
+    Plain(TcpStream),
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for HttpStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for HttpStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// authority -> (host, port); a missing port falls back to `default_port`
+/// (443 for TLS URLs, 80 otherwise). Handles `[v6]:port` brackets.
+fn split_authority(authority: &str, default_port: u16) -> (String, u16) {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some((host, tail)) = rest.split_once(']') else {
+            return (authority.to_string(), default_port);
+        };
+        let port = tail
+            .strip_prefix(':')
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(default_port);
+        (host.to_string(), port)
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) => match port.parse() {
+                Ok(port) => (host.to_string(), port),
+                Err(_) => (authority.to_string(), default_port),
+            },
+            None => (authority.to_string(), default_port),
+        }
+    }
+}
+
 async fn request(
     base: &Base,
     method: &str,
@@ -162,10 +266,24 @@ async fn request(
     };
     let full = format!("{prefix}{path}");
 
-    let stream = TcpStream::connect(&authority)
-        .await
-        .with_context(|| format!("dial {authority}"))?;
-    let (mut rx, mut tx) = stream.into_split();
+    let (host, port) = split_authority(&authority, if base.is_tls() { 443 } else { 80 });
+    let mut stream = if base.is_tls() {
+        let name = rustls::pki_types::ServerName::try_from(host.clone())
+            .map_err(|e| anyhow::anyhow!("bad TLS server name {host:?}: {e}"))?;
+        let tcp = TcpStream::connect((host.as_str(), port))
+            .await
+            .with_context(|| format!("dial {host}:{port}"))?;
+        let tls = tokio_rustls::TlsConnector::from(tls_config())
+            .connect(name, tcp)
+            .await
+            .with_context(|| format!("TLS handshake {host}:{port}"))?;
+        HttpStream::Tls(Box::new(tls))
+    } else {
+        let tcp = TcpStream::connect((host.as_str(), port))
+            .await
+            .with_context(|| format!("dial {host}:{port}"))?;
+        HttpStream::Plain(tcp)
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let body_text = body.map(|b| b.to_string());
@@ -179,14 +297,24 @@ async fn request(
         req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len()));
     }
     req.push_str("\r\n");
-    tx.write_all(req.as_bytes()).await?;
+    stream.write_all(req.as_bytes()).await?;
     if let Some(b) = &body_text {
-        tx.write_all(b.as_bytes()).await?;
+        stream.write_all(b.as_bytes()).await?;
     }
-    tx.flush().await?;
+    stream.flush().await?;
 
     let mut raw = Vec::new();
-    rx.read_to_end(&mut raw).await?;
+    let mut buf = [0u8; 8192];
+    loop {
+        // Over TLS a peer that skips close_notify reports an error instead of
+        // EOF; that still means "response is complete" for our purposes.
+        match stream.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+            Err(e) if e.to_string().contains("close_notify") => break,
+            Err(e) => return Err(e).context("reading store response"),
+        }
+    }
     let text = String::from_utf8_lossy(&raw);
     let status = text
         .lines()
@@ -364,4 +492,55 @@ pub async fn sync_mirror(
         write_jsonl(&path, &line_values)?;
     }
     Ok((pushed, pulled))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_base_accepts_all_carrier_schemes() {
+        for raw in [
+            "ws://b:7789",
+            "http://b:7789",
+            "wss://stub.example.com",
+            "https://stub.example.com/zonepair",
+        ] {
+            parse_base(raw).unwrap_or_else(|e| panic!("{raw}: {e:#}"));
+        }
+    }
+
+    #[test]
+    fn parse_base_rejects_unknown_and_schemeless() {
+        assert!(parse_base("ftp://b:7789").is_err());
+        assert!(parse_base("b:7789").is_err());
+        assert!(parse_base("https://").is_err());
+    }
+
+    #[test]
+    fn stdio_ws_matches_base_scheme() {
+        assert_eq!(
+            parse_base("http://b:7789").unwrap().stdio_ws(),
+            "ws://b:7789/v1/stdio"
+        );
+        assert_eq!(
+            parse_base("wss://stub.example.com").unwrap().stdio_ws(),
+            "wss://stub.example.com/v1/stdio"
+        );
+        assert_eq!(
+            parse_base("https://cf.example.com/zonepair").unwrap().stdio_ws(),
+            "wss://cf.example.com/zonepair/v1/stdio"
+        );
+    }
+
+    #[test]
+    fn split_authority_defaults_ports_and_handles_v6() {
+        assert_eq!(split_authority("b:7789", 443), ("b".into(), 7789));
+        assert_eq!(
+            split_authority("stub.example.com", 443),
+            ("stub.example.com".into(), 443)
+        );
+        assert_eq!(split_authority("[::1]:7789", 443), ("::1".into(), 7789));
+        assert_eq!(split_authority("[::1]", 80), ("::1".into(), 80));
+    }
 }
