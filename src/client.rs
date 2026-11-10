@@ -9,11 +9,11 @@
 
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
+use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use tokio::net::TcpStream;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -60,11 +60,6 @@ impl Base {
 
     fn is_tls(&self) -> bool {
         self.0.starts_with("https://") || self.0.starts_with("wss://")
-    }
-
-    fn authority(&self) -> String {
-        let rest = self.0.split_once("://").expect("parsed base").1;
-        rest.split('/').next().unwrap_or_default().to_string()
     }
 }
 
@@ -175,159 +170,43 @@ impl Stdio {
 
 // ---- session store over HTTP -------------------------------------------------
 
-/// The store HTTP request rides either a plain TCP connection or a rustls
-/// TLS stream, chosen by the base URL scheme.
-enum HttpStream {
-    Plain(TcpStream),
-    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+fn http_client(tls: rustls::ClientConfig) -> Result<Client> {
+    Client::builder()
+        .tls_backend_preconfigured(tls)
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .no_proxy()
+        .build()
+        .context("building store HTTP client")
 }
 
-impl AsyncRead for HttpStream {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
-            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
-        }
-    }
-}
-
-impl AsyncWrite for HttpStream {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
-            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
-            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            HttpStream::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
-            HttpStream::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
-        }
-    }
-}
-
-/// authority -> (host, port); a missing port falls back to `default_port`
-/// (443 for TLS URLs, 80 otherwise). Handles `[v6]:port` brackets.
-fn split_authority(authority: &str, default_port: u16) -> (String, u16) {
-    if let Some(rest) = authority.strip_prefix('[') {
-        let Some((host, tail)) = rest.split_once(']') else {
-            return (authority.to_string(), default_port);
-        };
-        let port = tail
-            .strip_prefix(':')
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(default_port);
-        (host.to_string(), port)
-    } else {
-        match authority.rsplit_once(':') {
-            Some((host, port)) => match port.parse() {
-                Ok(port) => (host.to_string(), port),
-                Err(_) => (authority.to_string(), default_port),
-            },
-            None => (authority.to_string(), default_port),
-        }
-    }
-}
+static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    http_client(tls_config().as_ref().clone()).expect("valid store HTTP client configuration")
+});
 
 async fn request(
+    client: &Client,
     base: &Base,
-    method: &str,
+    method: Method,
     path: &str,
     body: Option<&Value>,
     token: Option<&str>,
 ) -> Result<(u16, Value)> {
-    let authority = base.authority();
-    let prefix = {
-        let rest = base.as_str().split_once("://").expect("parsed base").1;
-        let after = &rest[authority.len()..];
-        after.trim_end_matches('/').to_string()
-    };
-    let full = format!("{prefix}{path}");
-
-    let (host, port) = split_authority(&authority, if base.is_tls() { 443 } else { 80 });
-    let mut stream = if base.is_tls() {
-        let name = rustls::pki_types::ServerName::try_from(host.clone())
-            .map_err(|e| anyhow::anyhow!("bad TLS server name {host:?}: {e}"))?;
-        let tcp = TcpStream::connect((host.as_str(), port))
-            .await
-            .with_context(|| format!("dial {host}:{port}"))?;
-        let tls = tokio_rustls::TlsConnector::from(tls_config())
-            .connect(name, tcp)
-            .await
-            .with_context(|| format!("TLS handshake {host}:{port}"))?;
-        HttpStream::Tls(Box::new(tls))
+    let url = base.url(if base.is_tls() { "https" } else { "http" }, path);
+    let mut request = client.request(method, url).header("Accept", "application/json");
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+    let response = request.send().await.context("sending store request")?;
+    let status = response.status().as_u16();
+    let body = response.bytes().await.context("reading store response")?;
+    let value = if body.iter().all(u8::is_ascii_whitespace) {
+        Value::Null
     } else {
-        let tcp = TcpStream::connect((host.as_str(), port))
-            .await
-            .with_context(|| format!("dial {host}:{port}"))?;
-        HttpStream::Plain(tcp)
-    };
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let body_text = body.map(|b| b.to_string());
-    let mut req = format!(
-        "{method} {full} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: application/json\r\n"
-    );
-    if let Some(t) = token {
-        req.push_str(&format!("Authorization: Bearer {t}\r\n"));
-    }
-    if let Some(b) = &body_text {
-        req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len()));
-    }
-    req.push_str("\r\n");
-    stream.write_all(req.as_bytes()).await?;
-    if let Some(b) = &body_text {
-        stream.write_all(b.as_bytes()).await?;
-    }
-    stream.flush().await?;
-
-    let mut raw = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        // Over TLS a peer that skips close_notify reports an error instead of
-        // EOF; that still means "response is complete" for our purposes.
-        match stream.read(&mut buf).await {
-            Ok(0) => break,
-            Ok(n) => raw.extend_from_slice(&buf[..n]),
-            Err(e) if e.to_string().contains("close_notify") => break,
-            Err(e) => return Err(e).context("reading store response"),
-        }
-    }
-    let text = String::from_utf8_lossy(&raw);
-    let status = text
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|s| s.parse::<u16>().ok())
-        .context("no HTTP status in response")?;
-    let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(text.len());
-    let body = &text[body_start..];
-    let value = if body.trim().is_empty() {
-        json!(null)
-    } else {
-        serde_json::from_str(body).with_context(|| format!("non-JSON body: {}", &body[..body.len().min(200)]))?
+        serde_json::from_slice(&body).context("non-JSON store response")?
     };
     Ok((status, value))
 }
@@ -344,14 +223,14 @@ fn ensure_ok(status: u16, value: &Value) -> Result<()> {
 }
 
 pub async fn store_list(base: &Base, token: Option<&str>) -> Result<Vec<String>> {
-    let (status, v) = request(base, "GET", "/v1/store/sessions", None, token).await?;
+    let (status, v) = request(&HTTP_CLIENT, base, Method::GET, "/v1/store/sessions", None, token).await?;
     ensure_ok(status, &v)?;
     Ok(v["sessions"].as_array().cloned().unwrap_or_default().iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
 }
 
 pub async fn store_exists(base: &Base, token: Option<&str>, session: &str) -> Result<bool> {
     let path = format!("/v1/store/sessions/{session}");
-    let (status, v) = request(base, "GET", &path, None, token).await?;
+    let (status, v) = request(&HTTP_CLIENT, base, Method::GET, &path, None, token).await?;
     if status == 404 {
         return Ok(false);
     }
@@ -361,7 +240,7 @@ pub async fn store_exists(base: &Base, token: Option<&str>, session: &str) -> Re
 
 pub async fn store_messages(base: &Base, token: Option<&str>, session: &str) -> Result<Vec<Value>> {
     let path = format!("/v1/store/sessions/{session}/messages");
-    let (status, v) = request(base, "GET", &path, None, token).await?;
+    let (status, v) = request(&HTTP_CLIENT, base, Method::GET, &path, None, token).await?;
     ensure_ok(status, &v)?;
     Ok(v["messages"].as_array().cloned().unwrap_or_default())
 }
@@ -373,7 +252,7 @@ pub async fn store_fork(
     up_to: &str,
 ) -> Result<(String, Vec<Value>, Vec<Value>)> {
     let path = format!("/v1/store/sessions/{session}/fork");
-    let (status, v) = request(base, "POST", &path, Some(&json!({"upTo": up_to})), token).await?;
+    let (status, v) = request(&HTTP_CLIENT, base, Method::POST, &path, Some(&json!({"upTo": up_to})), token).await?;
     ensure_ok(status, &v)?;
     let new = v
         .get("sessionId")
@@ -387,7 +266,7 @@ pub async fn store_fork(
 
 pub async fn store_delete(base: &Base, token: Option<&str>, session: &str) -> Result<bool> {
     let path = format!("/v1/store/sessions/{session}");
-    let (status, v) = request(base, "DELETE", &path, None, token).await?;
+    let (status, v) = request(&HTTP_CLIENT, base, Method::DELETE, &path, None, token).await?;
     ensure_ok(status, &v)?;
     Ok(v.get("deleted").and_then(Value::as_bool).unwrap_or(false))
 }
@@ -399,7 +278,7 @@ pub async fn store_merge(
     messages: &[Value],
 ) -> Result<(u64, u64)> {
     let path = format!("/v1/store/sessions/{session}/messages");
-    let (status, v) = request(base, "PUT", &path, Some(&json!({"messages": messages})), token).await?;
+    let (status, v) = request(&HTTP_CLIENT, base, Method::PUT, &path, Some(&json!({"messages": messages})), token).await?;
     ensure_ok(status, &v)?;
     Ok((
         v["added"].as_u64().unwrap_or(0),
@@ -497,6 +376,115 @@ pub async fn sync_mirror(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+    const CHUNKED_RESPONSE: &[u8] =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+          17\r\n{\"ok\":true,\"sessions\":[\r\n\
+          a\r\n\"gateway\"]\r\n\
+          1\r\n}\r\n0\r\n\r\n";
+
+    async fn reply<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, response: &[u8]) {
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+            let count = stream.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "client closed before request headers");
+            request.extend_from_slice(&buffer[..count]);
+        }
+        stream.write_all(response).await.unwrap();
+        stream.flush().await.unwrap();
+    }
+
+    async fn serve_http(response: &'static [u8]) -> (Base, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = parse_base(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            reply(&mut stream, response).await;
+            stream.shutdown().await.unwrap();
+        });
+        (base, server)
+    }
+
+    #[tokio::test]
+    async fn store_list_decodes_chunked_gateway_response() {
+        let (base, server) = serve_http(CHUNKED_RESPONSE).await;
+        let sessions = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store_list(&base, None),
+        ).await.unwrap().unwrap();
+        assert_eq!(sessions, ["gateway"]);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn store_list_rejects_truncated_body() {
+        let (base, server) = serve_http(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n\
+              {\"ok\":true,\"sessions\":[\"incomplete\"]}",
+        ).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store_list(&base, None),
+        ).await.unwrap();
+        assert!(result.is_err(), "accepted a body shorter than Content-Length");
+        server.await.unwrap();
+    }
+
+    async fn serve_tls(response: &'static [u8]) -> (Base, Client, tokio::task::JoinHandle<()>) {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.der().clone()).unwrap();
+        let tls = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let client = http_client(tls).unwrap();
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der());
+        let tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der().clone()], key.into())
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = parse_base(&format!(
+            "https://localhost:{}", listener.local_addr().unwrap().port(),
+        )).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            reply(&mut stream, response).await;
+            // Deliberately drop TCP without TLS close_notify, as gateways may.
+        });
+        (base, client, server)
+    }
+
+    #[tokio::test]
+    async fn tls_chunked_body_completes_without_close_notify() {
+        let (base, client, server) = serve_tls(CHUNKED_RESPONSE).await;
+        let (status, value) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            request(&client, &base, Method::GET, "/v1/store/sessions", None, None),
+        ).await.unwrap().unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(value, json!({"ok": true, "sessions": ["gateway"]}));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tls_truncated_body_is_not_an_empty_success() {
+        let (base, client, server) = serve_tls(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+        ).await;
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            request(&client, &base, Method::GET, "/v1/store/sessions", None, None),
+        ).await.unwrap().expect_err("accepted a truncated TLS response as empty data");
+        let cause = error.downcast_ref::<reqwest::Error>().expect("HTTP body error");
+        assert!(cause.is_body() || cause.is_decode(), "{error:#}");
+        server.await.unwrap();
+    }
 
     #[test]
     fn parse_base_accepts_all_carrier_schemes() {
@@ -531,16 +519,5 @@ mod tests {
             parse_base("https://cf.example.com/zonepair").unwrap().stdio_ws(),
             "wss://cf.example.com/zonepair/v1/stdio"
         );
-    }
-
-    #[test]
-    fn split_authority_defaults_ports_and_handles_v6() {
-        assert_eq!(split_authority("b:7789", 443), ("b".into(), 7789));
-        assert_eq!(
-            split_authority("stub.example.com", 443),
-            ("stub.example.com".into(), 443)
-        );
-        assert_eq!(split_authority("[::1]:7789", 443), ("::1".into(), 7789));
-        assert_eq!(split_authority("[::1]", 80), ("::1".into(), 80));
     }
 }

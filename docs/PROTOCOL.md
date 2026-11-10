@@ -71,6 +71,11 @@ Binary frames are a protocol violation (server warns and ignores). Optional
 `--token TOKEN` enforces `Authorization: Bearer` on every route — real
 auth/TLS/device management is expected to come from the gateway in front.
 
+The client uses reqwest with the same verified rustls configuration as its
+WebSocket transport. HTTP framing and response-body completion are handled
+by the library: chunked responses are decoded and truncated bodies fail
+before JSON parsing. Store requests do not automatically redirect or retry.
+
 ## Session store format (projection backend)
 
 `<store>/projects/**/<sessionID>.jsonl`, one JSON object per line with at
@@ -105,8 +110,6 @@ the RPC surface exists so machine A never touches B's filesystem.
 
 ## Build/deploy traps
 
-* The mock docker suite pins `B_CLAUDE_CMD` explicitly: `compose run`
-  recreates `b` and re-evaluates interpolation with empty host vars.
 * A nix `dockerTools` image is not a base image. It ships no
   `/etc/nsswitch.conf` (glibc then cannot use DNS — the client could not
   resolve service `b`), no `/usr/bin/env` and no `/bin/sh` (so

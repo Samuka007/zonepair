@@ -29,8 +29,6 @@ Single-context: `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agent
   in this workspace — see ADR-0006.
 - Do **not** add bash/python/node test files. bash may start containers and
   exec the Rust harness; it must not contain assertions.
-- Container e2e: build/loads the images, then execs the same Rust harness
-  inside them (see `scripts/run-e2e-docker.sh`).
 
 ## Rust dependencies
 

@@ -3,6 +3,28 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-10 — store HTTP framing and verification cleanup
+
+- Store requests now use reqwest 0.13 with the existing ring/rustls trust
+  configuration. Removed the hand-written HTTP parser, stream adapter, and
+  unconditional `close_notify` error suppression.
+- Regression tests failed before the fix: chunk framing was parsed as JSON,
+  and a valid JSON body shorter than `Content-Length` was accepted.
+  Both now pass. Additional loopback TLS tests cover complete chunked bodies
+  without `close_notify` and rejection of an empty, truncated response.
+- Actual `stub-client sess list` smoke: Content-Length and chunked responses
+  both return the expected session; a truncated body exits non-zero with an
+  incomplete-body error. An invalid TLS certificate is rejected.
+- `nix develop -c cargo test --workspace --locked`: **PASS** (8 unit tests,
+  native mock suite, 6 store tests).
+- `nix flake check -L`: **PASS** after removing the obsolete shellcheck gate.
+  Removed the unused Docker test image and live references to deleted
+  verification scripts; historical evidence entries below remain unchanged.
+- `.#release-dist` (x86_64 Linux musl) and `.#release-dist-windows`: **PASS**.
+  The staged Linux server/client also passed the native mock harness.
+- No Docker verification or real Claude invocation. ARM64 and macOS builds
+  remain delegated to CI's native runners.
+
 ## 2026-11-08 (part 3) — release mechanics move into the flake
 
 - `.#release-dist` (linux) stages `stub-client-x86_64-linux` +

@@ -8,7 +8,6 @@
       pkgs.rust-analyzer
       pkgs.jq
       pkgs.iproute2
-      pkgs.shellcheck
     ];
   };
 
