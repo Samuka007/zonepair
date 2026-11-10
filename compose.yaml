@@ -1,29 +1,15 @@
-# Local e2e for the docker suites. The images are built by nix, not by docker:
-# run `scripts/nix-docker-load.sh` first to load the flake's `docker-server` /
-# `docker-client` outputs into the local daemon.
 services:
   b:
-    # The e2e image is the production server image plus the Rust mock claude
-    # and the e2e harness (see nix/images.nix); production deployments use
-    # claude-io-stub-server:latest.
-    image: claude-io-stub-server-test:latest
+    image: ${B_IMAGE:-ghcr.io/samuka007/zonepair-server:latest}
+    restart: unless-stopped
     environment:
+      TOKEN: ${B_TOKEN:-}
       CLAUDE_CMD: ${B_CLAUDE_CMD:-}
     ports:
-      - "127.0.0.1:7789:7789"
+      - "${B_PUBLISH:-127.0.0.1:7789:7789}"
     volumes:
-      # The session store (also claude's CLAUDE_CONFIG_DIR) ...
       - stub-data:/data
-      # ... and a persistent HOME, so a one-time
-      # `docker compose exec -it b claude auth login` survives `up`/`down`.
       - b-home:/root
-
-  a:
-    image: claude-io-stub-client:latest
-    environment:
-      CLAUDE_STUB_URL: ws://b:7789
-    depends_on:
-      - b
 
 volumes:
   stub-data:

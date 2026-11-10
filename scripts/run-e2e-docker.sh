@@ -13,6 +13,7 @@ cd "$ROOT"
 
 scripts/nix-docker-load.sh
 
+export B_IMAGE=claude-io-stub-server-test:latest
 export B_CLAUDE_CMD=/usr/local/bin/claude-mock
 docker compose up -d b
 trap 'docker compose down -v --remove-orphans' EXIT

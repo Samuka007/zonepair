@@ -51,6 +51,4 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      # Builds docker-server/docker-client via dockerTools, loads them into the
-      # runner's docker daemon, then boots the two-container suite.
       - run: scripts/run-e2e-docker.sh
