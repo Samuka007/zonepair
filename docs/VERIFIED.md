@@ -3,6 +3,44 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-11 — darwin cachix coverage, doctor config-file resolution, bins restriction
+
+- Issue #13 closed by release `v0.1.0-rc.7` ([run
+  42968228443](https://github.com/Samuka007/zonepair/actions/runs/42968228443),
+  darwin job green): the darwin `release-binaries` entry now builds
+  `.#release-dist`, `.#stub-client` and `.#stub-server`. narinfo on
+  `samuka007.cachix.org`: stub-client `n2z7iikm…` **200**, stub-server
+  `j6qlzfhf…` **200**, stub-darwin `ay5kc26v…` **200**, all carrying
+  `Sig: samuka007.cachix.org-1:…`.
+- Consumer substitution proven at the runtime closure: the `stub-client` /
+  `stub-server` narinfos' `References` is exactly
+  `libiconv-115.100.1`, present on `cache.nixos.org` (**200**). A
+  single-source `nix copy --from samuka007` still fails on libiconv — a tool
+  limitation, not a cache gap: consumers query both substituters (flake
+  `nixConfig` declares samuka007; `cache.nixos.org` is default). Of the 1234
+  build-closure paths (`nix derivation show -r`), samuka007 holds the 63 the
+  darwin runner built (zonepair outputs, crate deps, fenix components); the
+  rest are nixpkgs build inputs on cache.nixos.org. Paths absent from both
+  caches are build-time-only (`patchutils`, `make-shell-wrapper-hook`) and
+  are never substituted by a consumer. rc.6's `stub-client` path stays 404
+  permanently — consumers need ≥ rc.7.
+- Issue #15 fixed in `9488b52`: bare `doctor` routes URL resolution through
+  the shared `resolve_url` (flag > env > config file). e2e:
+  `doctor from config file ok`, `doctor without any url fails with the
+  shared message`, existing `doctor --url ok` unchanged. `cargo test
+  --test e2e` and `nix flake check -L` green.
+- Issue #14 fixed in `2e975fa`: `mkStub`'s dead `bins` parameter wired into
+  `cargoBuildFlags` (`--bin` per entry, the `windows.nix` precedent);
+  `bins = null` merges no attribute, so `checks.default`'s derivation is
+  unchanged (`stub` drv env has no `cargoBuildFlags`; `stub-server` shows
+  `["--bin","stub-server"]`). Packages are now genuinely distinct — pre-fix
+  `stub` == `stub-darwin` == `stub-server` were byte-identical derivations
+  and `stub-client` differed only by `meta.mainProgram`; post-fix the three
+  darwin paths are separate outPaths, so the production images no longer
+  carry `claude-mock` / `zonepair-e2e`.
+- Both pushes green on ci.yml (`9488b52`, `2e975fa`); `nix fmt` clean on
+  `nix/rust.nix`.
+
 ## 2026-11-10 (part 3) - client config file (ADR-0008)
 
 - `stub-client` relay knobs moved from the opencode service env to a
