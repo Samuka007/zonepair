@@ -65,6 +65,34 @@ chose; the actual Claude configuration lives entirely on B. The login flow
 is intentionally not replaced: local `claude auth login` on A is outside
 this integration.
 
+### Agent SDK hosts other than opencode (e.g. OMP's claude-bridge)
+
+The mirror only contains what was pushed from it or pulled into it. Anything
+else that writes Claude session transcripts on A must write them **into the
+same mirror directory** set by `setup`, or the relay cannot see those
+sessions: the bridge writes a session id under its own root, then
+`--resume` reaches B, which has no such conversation — every turn fails
+with `No conversation found with session ID`.
+
+OMP's claude-bridge derives its transcript root from `CLAUDE_CONFIG_DIR`
+too, so point the **OMP process** (the one that spawns the bridge) at the
+mirror. OMP loads `~/.omp/agent/.env` (and `~/.env`) on startup — put it
+there rather than in a service env, so interactive and scripted runs agree:
+
+```bash
+# ~/.omp/agent/.env
+CLAUDE_CONFIG_DIR=/home/you/.claude-remote-mirror
+```
+
+Note the two roles this one variable plays, and that both must agree:
+
+- for **opencode** and the **bridge**, `CLAUDE_CONFIG_DIR` is "where the
+  Agent SDK store helpers read/write session transcripts" (the mirror),
+- for **stub-client itself**, the same variable is only a default
+  mirror-dir candidate (`flag > env > file > default`, ADR-0008) —
+  `sync` unions the mirror with B's store by uuid (append-only, both
+  directions); it never computes transcript paths from a cwd.
+
 opencode's in-process Agent SDK store helpers (`sessionExists` / `fork` /
 `remove`) read `CLAUDE_CONFIG_DIR` from the process environment, so they run
 on the mirror as if it were a local claude store. The spawned stub-client
@@ -101,7 +129,7 @@ if you want to relocate the mirror while migrating.
 | `CLAUDE_STUB_URL` | Server base URL. `ws://` / `http://` for plain transport; `wss://` / `https://` for TLS, including gateway path prefixes. Overrides the file. |
 | `CLAUDE_STUB_TOKEN` | Bearer token matching the server's `TOKEN`. Overrides the file. |
 | `CLAUDE_STUB_MIRROR` | `1` forces push/pull sync around each relayed turn, regardless of the file's `mirror` flag. |
-| `CLAUDE_CONFIG_DIR` | A-local mirror of B's store. Opencode's SDK helpers read it from their process environment. |
+| `CLAUDE_CONFIG_DIR` | A-local mirror of B's store. Opencode's SDK helpers read it from their process environment; an Agent SDK host writing transcripts elsewhere (OMP's claude-bridge) must have it pointed at the same mirror. |
 
 An empty/absent token at every layer means no `Authorization` header is sent;
 the server accepts that only when its own `TOKEN` is empty.

@@ -124,6 +124,12 @@ session store, and runs a preflight — re-check anytime with
 `stub-client doctor --url <URL>`. Use OpenCode normally and pick the Claude
 Agent provider (`opencode auth login claude-agent`); `stub-client sync`
 re-synchronizes the mirror on demand, `stub-client unset` removes everything.
+Using OMP's `claude-bridge` provider instead of (or next to) opencode: the
+bridge writes session transcripts into `CLAUDE_CONFIG_DIR` too, so the OMP
+process must see the mirror — e.g. one line in `~/.omp/agent/.env`. See
+[docs/CLIENT.md](docs/CLIENT.md#agent-sdk-hosts-other-than-opencode-eg-omps-claude-bridge):
+a host writing transcripts anywhere else bricks every resume with
+`No conversation found with session ID`.
 Upgrading from a rc.5-or-earlier install:
 [docs/CLIENT.md](docs/CLIENT.md#migrating-from-rc5-and-earlier-installs).
 

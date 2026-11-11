@@ -3,6 +3,47 @@
 Evidence runs, newest first. Re-run anything you doubt; these are records,
 not guarantees.
 
+## 2026-11-11 — bridged SDK host needs the mirror as its CLAUDE_CONFIG_DIR (#17)
+
+- Reproduced with real components, no mocks in the data path: `cc-session-io`
+  `createSession` wrote a two-message transcript for a fresh uuid into a
+  throwaway A-side root, then the **real claude binary** was driven through
+  **stub-client → stub-server** (`--resume <uuid>`, stream-json). With the
+  bridge's root (default `~/.claude`) disagreeing with the configured mirror
+  (`~/.claude-remote-mirror`), B's claude exited code 1 with
+  `No conversation found with session ID: <uuid>` — zero provider calls, the
+  exact #17 symptom.
+- Root cause corrected against the issue body: it is **not** "OMP resends the
+  same dead session id" and **not** mirror staleness. The OMP process had no
+  `CLAUDE_CONFIG_DIR` at all, so claude-bridge (`getSessionPath(…,
+  process.env.CLAUDE_CONFIG_DIR)`) wrote transcripts into `~/.claude` while
+  `stub-client sync` pushed the (empty) configured mirror. Same uuid resumed
+  fine once both roots pointed at the same directory.
+- Fix: share the root. Machine A: `CLAUDE_CONFIG_DIR=<mirror>` in
+  `~/.omp/agent/.env` (OMP loads it into `Bun.env` before plugins load —
+  `pi-utils/src/env.ts` fills only unset keys, so explicit env still wins).
+  Repo: README + docs/CLIENT.md document the contract for any Agent SDK host.
+- Aligned-root resume proven with the same harness: first relayed turn
+  resumed the imported transcript (marker echoed back), second turn resumed
+  again; B's store grew `projects/lab/<uuid>.jsonl` (push by stem) and the
+  mirror pulled it back. Negative controls: root left at `~/.claude` →
+  reproduces; root pointed straight at B's store → also works (stub-client
+  walks any root), confirming the invariant is only "both sides same dir".
+- OMP end-to-end: `omp --model claude-bridge/claude-opus-5-5 -p --no-session`
+  against a throwaway local stub-server + fake Anthropic provider exited 0
+  with the provider's reply text — the real **installed** `~/.local/bin/
+  stub-client` was spawned by the bridge, `ZONEPAIR_CLIENT_CONFIG` +
+  `CLAUDE_CONFIG_DIR` isolated the data plane, and the B store gained the
+  OMP session transcript under its cwd-hash dir (post-turn pull landed it in
+  the mirror). A `billing: subscription` preflight blocks hosts without a
+  claude.ai login (this box has none); `billing: inherit` + `ANTHROPIC_*`
+  env passes. No repo code changed; `cargo test`/`nix flake check` run to
+  confirm no drift.
+- Original session uuids from #17 were never resumed or rewritten; the
+  historical transcript was consulted read-only (seance) and shows no
+  recorded cwd/argv/mirror state, i.e. the issue's single-variable isolation
+  table was the only path evidence — and it tested claude, not the relay.
+
 ## 2026-11-11 — darwin cachix coverage, doctor config-file resolution, bins restriction
 
 - Issue #13 closed by release `v0.1.0-rc.7` ([run
