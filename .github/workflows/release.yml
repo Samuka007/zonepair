@@ -48,12 +48,16 @@ jobs:
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
       - run: nix build -L .#release-dist --out-link release-dist
-      # Nothing else builds packages.stub-client on darwin: CI's flake check
-      # builds checks.default (= `stub`), release-dist builds `stub-darwin`.
-      # Without this, a tagged `#stub-client` 404s on cachix and consumers
+      # Nothing else builds packages.stub-client / packages.stub-server on
+      # darwin: CI's flake check builds checks.default (= `stub`), and
+      # release-dist builds `stub-darwin`, a distinct derivation from per-bin
+      # `stub-server` now that mkStub honors `bins`. Without this, tagged
+      # `#stub-client` / `#stub-server` installs 404 on cachix and consumers
       # fall back to a full fenix toolchain download + local build (#13).
-      # Linux stub-client is already pushed by the docker-images job.
-      - run: nix build -L .#stub-client
+      # No --out-link here: the release-dist out-link from the previous step
+      # must survive for the cp below. Linux stub-client is already pushed by
+      # the docker-images job.
+      - run: nix build -L .#stub-client .#stub-server
         if: matrix.system == 'aarch64-darwin'
       - run: cp -rL release-dist/dist dist # deref the store symlink for upload
       - uses: actions/upload-artifact@v7

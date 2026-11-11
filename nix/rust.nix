@@ -1,4 +1,12 @@
-{ lib, pkgs, system, product, toolchains, config, ... }:
+{
+  lib,
+  pkgs,
+  system,
+  product,
+  toolchains,
+  config,
+  ...
+}:
 let
   # musl static triple per host system — the portable release artifact.
   # Static linking is a linux/musl story: darwin has no musl target, and
@@ -10,11 +18,12 @@ let
   };
 
   # One Cargo build definition, reused by every target. `extra` overrides
-  # buildRustPackage args per target (cargoBuildFlags, NIX_LDFLAGS, …).
+  # buildRustPackage args per target (RUSTFLAGS, NIX_LDFLAGS, …).
   #
-  # `bins` (optional) restricts which binaries are built AND installed —
-  # production images ship only the binaries they run, so the mock claude
-  # and the e2e harness never end up in a production artifact.
+  # `bins` (optional) restricts which binaries are built AND installed:
+  # each bin becomes a `--bin` flag on cargoBuildFlags, so cargo only builds
+  # what the package should install (the install hook copies the built bins).
+  # null = no flags = the whole workspace, all four bins (`stub`).
   mkStub =
     {
       rustPlatform,
@@ -42,6 +51,12 @@ let
           platforms = lib.platforms.linux ++ lib.platforms.darwin;
         }
         // meta;
+      }
+      // lib.optionalAttrs (bins != null) {
+        cargoBuildFlags = builtins.concatMap (b: [
+          "--bin"
+          b
+        ]) bins;
       }
       // extra
     );
@@ -133,7 +148,11 @@ in
   # across releases — consumers and the tag workflow both rely on them.
   packages.release-dist =
     let
-      pkg = if pkgs.stdenv.hostPlatform.isDarwin then config.packages.stub-darwin else config.packages.stub-static;
+      pkg =
+        if pkgs.stdenv.hostPlatform.isDarwin then
+          config.packages.stub-darwin
+        else
+          config.packages.stub-static;
     in
     pkgs.runCommand "zonepair-release-dist" { } ''
       mkdir -p $out/dist
@@ -141,11 +160,10 @@ in
       install -m755 ${pkg}/bin/stub-client $out/dist/stub-client-${system}
     '';
 
-  packages.release-dist-windows =
-    pkgs.runCommand "zonepair-release-dist-windows" { } ''
-      mkdir -p $out/dist
-      install -m755 \
-        ${config.packages.stub-client-windows}/bin/stub-client.exe \
-        $out/dist/stub-client-x86_64-windows.exe
-    '';
+  packages.release-dist-windows = pkgs.runCommand "zonepair-release-dist-windows" { } ''
+    mkdir -p $out/dist
+    install -m755 \
+      ${config.packages.stub-client-windows}/bin/stub-client.exe \
+      $out/dist/stub-client-x86_64-windows.exe
+  '';
 }
