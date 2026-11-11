@@ -739,6 +739,92 @@ async fn doctor_accepts_url(server: &Server) {
     eprintln!("doctor --url ok");
 }
 
+/// Bare `doctor` (no `--url`, no `CLAUDE_STUB_URL`) must resolve the relay
+/// URL from the client config file (ADR-0008 order: flag > env > file) —
+/// after `setup` writes the file, doctor has to work in a fresh shell.
+async fn doctor_uses_config_file(server: &Server) {
+    let url = format!("ws://127.0.0.1:{}", server.port);
+    let workdir = tempdir();
+    let fake_bin = workdir.join("fake-opencode-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let fake = fake_bin.join("opencode");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *\"service get env OPENCODE_CLAUDE_PATH\"*) echo {};;\n  *\"--version\"*) echo \"opencode v2.2.5\";;\n  *) exit 0;;\nesac\n",
+            client_bin(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let cfg_file = workdir.join("client.toml");
+    std::fs::write(&cfg_file, format!("url = \"{url}\"\n")).unwrap();
+
+    let out = Command::new(client_bin())
+        .arg("doctor")
+        .env_remove("CLAUDE_STUB_URL")
+        .env_remove("CLAUDE_STUB_TOKEN")
+        .env("ZONEPAIR_CLIENT_CONFIG", &cfg_file)
+        .env("PATH", format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default()))
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("  note: stub-client not found — doctor check skipped");
+            return;
+        }
+        Err(e) => fail(&format!("spawn stub-client doctor: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        fail(&format!("bare doctor with config file failed: {stdout}{stderr}"));
+    }
+    if !stdout.contains(&format!("stub-client doctor  ({url})")) {
+        fail(&format!("doctor did not run against the config-file url {url}: {stdout}"));
+    }
+    eprintln!("doctor from config file ok");
+}
+
+/// Bare `doctor` with no env var and no config file must fail with the shared
+/// resolution message pointing at `stub-client setup` — not the old env-only
+/// text, which denied the config file as a URL source.
+async fn doctor_without_url_fails() {
+    let workdir = tempdir();
+    let cfg_file = workdir.join("client.toml");
+    let out = Command::new(client_bin())
+        .arg("doctor")
+        .env_remove("CLAUDE_STUB_URL")
+        .env_remove("CLAUDE_STUB_TOKEN")
+        .env("ZONEPAIR_CLIENT_CONFIG", &cfg_file)
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("  note: stub-client not found — doctor check skipped");
+            return;
+        }
+        Err(e) => fail(&format!("spawn stub-client doctor: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        fail(&format!("bare doctor without env or config file succeeded: {stdout}{stderr}"));
+    }
+    if !stderr.contains("run `stub-client setup`") {
+        fail(&format!("doctor failure does not point at `stub-client setup`: {stderr}"));
+    }
+    if stderr.contains("CLAUDE_STUB_URL or --url is required") {
+        fail("doctor still fails with the old env-only message");
+    }
+    eprintln!("doctor without any url fails with the shared message");
+}
+
 /// Fake `opencode` modelling the service-env contract with a state file (one
 /// `KEY=VALUE` per line): `service set/unset/get env KEY [VALUE]` mutate and
 /// read it, `service restart` is silent, `--version` answers v2.2.5. Args:
@@ -1080,6 +1166,8 @@ async fn run_suite() {
     let server = spawn_or_external().await;
     basic_turn(&server.base).await;
     doctor_accepts_url(&server).await;
+    doctor_uses_config_file(&server).await;
+    doctor_without_url_fails().await;
     setup_and_bare_shell(&server).await;
     unset_lifecycle(&server).await;
     tool_round_trip(&server.base).await;
