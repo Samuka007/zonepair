@@ -79,7 +79,9 @@ fn mirror_enabled() -> bool {
     if std::env::var("CLAUDE_STUB_MIRROR").is_ok_and(|v| v == "1") {
         return true;
     }
-    cfg::load().map(|c| c.mirror.unwrap_or(false)).unwrap_or(false)
+    cfg::load()
+        .map(|c| c.mirror.unwrap_or(false))
+        .unwrap_or(false)
 }
 
 #[tokio::main]
@@ -217,7 +219,8 @@ async fn setup_cli(args: &[String]) -> Result<()> {
     })?;
     println!("client config {}", written.display());
 
-    std::fs::create_dir_all(&mirror_dir).with_context(|| format!("creating mirror dir {mirror_dir}"))?;
+    std::fs::create_dir_all(&mirror_dir)
+        .with_context(|| format!("creating mirror dir {mirror_dir}"))?;
 
     let exe = std::env::current_exe()
         .context("resolving our own path")?
@@ -234,7 +237,10 @@ async fn setup_cli(args: &[String]) -> Result<()> {
         .output();
     match probe {
         Ok(_) => {
-            for (key, value) in [("OPENCODE_CLAUDE_PATH", &exe), ("CLAUDE_CONFIG_DIR", &mirror_dir)] {
+            for (key, value) in [
+                ("OPENCODE_CLAUDE_PATH", &exe),
+                ("CLAUDE_CONFIG_DIR", &mirror_dir),
+            ] {
                 // Capture output: opencode's subcommands are chatty on stdout
                 // (`service restart` prints its listen URL) and would
                 // otherwise pollute our transcript.
@@ -243,7 +249,10 @@ async fn setup_cli(args: &[String]) -> Result<()> {
                     .output()
                     .with_context(|| format!("opencode service set env {key}"))?;
                 if !out.status.success() {
-                    bail!("opencode service set env {key} failed ({:?}); set it by hand", out.status.code());
+                    bail!(
+                        "opencode service set env {key} failed ({:?}); set it by hand",
+                        out.status.code()
+                    );
                 }
                 println!("opencode server env {key}={value}");
             }
@@ -252,7 +261,10 @@ async fn setup_cli(args: &[String]) -> Result<()> {
             let _ = std::process::Command::new("opencode")
                 .args(["service", "unset", "env", "PROBE"])
                 .output();
-            let _ = std::process::Command::new("opencode").arg("service").arg("restart").output();
+            let _ = std::process::Command::new("opencode")
+                .arg("service")
+                .arg("restart")
+                .output();
         }
         Err(_) => {
             println!("opencode not on PATH — export these in whatever starts it:");
@@ -264,7 +276,9 @@ async fn setup_cli(args: &[String]) -> Result<()> {
     // Bootstrap the mirror so opencode's in-process store helpers start from
     // B's real state rather than an empty directory.
     match client::sync_mirror(&base, token.as_deref(), std::path::Path::new(&mirror_dir)).await {
-        Ok((pushed, pulled)) => println!("mirror bootstrap: pushed {pushed} line(s), pulled {pulled} line(s)"),
+        Ok((pushed, pulled)) => {
+            println!("mirror bootstrap: pushed {pushed} line(s), pulled {pulled} line(s)")
+        }
         Err(e) => {
             let msg = format!("{e:#}");
             if msg.contains("401") && token.is_none() {
@@ -276,7 +290,13 @@ async fn setup_cli(args: &[String]) -> Result<()> {
     }
 
     println!();
-    doctor_cli(&["--url".to_string(), url.clone(), "--mirror".to_string(), mirror_dir.clone()]).await
+    doctor_cli(&[
+        "--url".to_string(),
+        url.clone(),
+        "--mirror".to_string(),
+        mirror_dir.clone(),
+    ])
+    .await
 }
 
 /// Reverse of `setup`: erase the client config file and remove exactly the two
@@ -325,7 +345,10 @@ async fn unset_cli(args: &[String]) -> Result<()> {
                 bail!("opencode service unset env PROBE failed ({status})");
             }
             println!("removed PROBE");
-            let _ = std::process::Command::new("opencode").arg("service").arg("restart").output();
+            let _ = std::process::Command::new("opencode")
+                .arg("service")
+                .arg("restart")
+                .output();
         }
         Err(_) => {
             println!("opencode not on PATH — unset these in whatever starts it:");
@@ -369,7 +392,10 @@ async fn doctor_cli(args: &[String]) -> Result<()> {
     // 1. the endpoint answers session-store HTTP at all
     let token = resolve_token(None);
     match client::store_list(&base, token.as_deref()).await {
-        Ok(sessions) => println!("  ok    store reachable ({} session(s) on B)", sessions.len()),
+        Ok(sessions) => println!(
+            "  ok    store reachable ({} session(s) on B)",
+            sessions.len()
+        ),
         Err(e) => bad(format!("store unreachable: {e:#}")),
     }
 
@@ -385,7 +411,9 @@ async fn doctor_cli(args: &[String]) -> Result<()> {
             if value.is_empty() {
                 bad("opencode server has no OPENCODE_CLAUDE_PATH — opencode would run a local claude directly, not through the stub".to_string());
             } else if !value.contains("stub-client") {
-                bad(format!("OPENCODE_CLAUDE_PATH={value} does not look like stub-client"));
+                bad(format!(
+                    "OPENCODE_CLAUDE_PATH={value} does not look like stub-client"
+                ));
             } else {
                 println!("  ok    opencode server OPENCODE_CLAUDE_PATH={value}");
             }
@@ -394,7 +422,10 @@ async fn doctor_cli(args: &[String]) -> Result<()> {
     }
 
     // 3. opencode new enough for the Claude Agent provider
-    match std::process::Command::new("opencode").arg("--version").output() {
+    match std::process::Command::new("opencode")
+        .arg("--version")
+        .output()
+    {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
             match parse_version(&text) {
@@ -419,13 +450,19 @@ async fn doctor_cli(args: &[String]) -> Result<()> {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
-    let mirror = explicit_mirror.or(server_mirror).unwrap_or_else(mirror_default);
+    let mirror = explicit_mirror
+        .or(server_mirror)
+        .unwrap_or_else(mirror_default);
     match std::fs::read_dir(&mirror) {
-        Err(e) => warn(format!("mirror {mirror} missing ({e}) — run `stub-client setup`")),
+        Err(e) => warn(format!(
+            "mirror {mirror} missing ({e}) — run `stub-client setup`"
+        )),
         Ok(entries) => {
             let n = entries.filter_map(|e| e.ok()).count();
             if n == 0 {
-                warn(format!("mirror {mirror} is empty — run `stub-client sync` once"));
+                warn(format!(
+                    "mirror {mirror} is empty — run `stub-client sync` once"
+                ));
             } else {
                 println!("  ok    mirror {mirror} ({n} entries)");
             }
@@ -456,12 +493,13 @@ async fn transport(argv: &[String]) -> Result<()> {
     // Mirror push before the turn (ADR-0004): deliver A-side forks to B, so a
     // resume/fork created by opencode's in-process SDK helpers is visible to
     // the claude child on B. Enabled by CLAUDE_STUB_MIRROR=1 or the client
-    // config file's `mirror` flag.
+    // config file's `mirror` flag. Best-effort: the model turn is the product,
+    // so a store hiccup must not abort the relay before the WS even opens.
     if mirror_enabled() {
         let mirror = std::path::PathBuf::from(resolve_mirror_dir(None));
-        client::sync_mirror(&base, token.as_deref(), &mirror)
-            .await
-            .context("mirror push before relay")?;
+        if let Err(e) = client::sync_mirror(&base, token.as_deref(), &mirror).await {
+            eprintln!("stub-client: mirror push before relay failed: {e:#}");
+        }
     }
 
     let stream = client::open_stdio(&base, &stdio_header(argv), token.as_deref()).await?;
@@ -487,7 +525,9 @@ async fn transport(argv: &[String]) -> Result<()> {
                 _ => {
                     // ask the server to close the child's stdin: claude flushes on EOF
                     let _ = tx
-                        .send(Message::Text(json!({"proto": "stdin-eof"}).to_string().into()))
+                        .send(Message::Text(
+                            json!({"proto": "stdin-eof"}).to_string().into(),
+                        ))
                         .await;
                     break;
                 }
@@ -539,9 +579,12 @@ async fn sess_cli(args: &[String]) -> Result<()> {
     let base = client::parse_base(&resolve_url(url_flag)?)?;
     let token = resolve_token(None);
 
-    let op = args.get(index).context("missing sess op (exists|messages|fork|delete|list|merge)")?;
+    let op = args
+        .get(index)
+        .context("missing sess op (exists|messages|fork|delete|list|merge)")?;
     let need = |n: usize, what: &str| -> Result<&String> {
-        args.get(n).with_context(|| format!("sess {op} needs {what}"))
+        args.get(n)
+            .with_context(|| format!("sess {op} needs {what}"))
     };
     let out = match op.as_str() {
         "exists" => {
@@ -572,13 +615,15 @@ async fn sess_cli(args: &[String]) -> Result<()> {
         "merge" => {
             let session = need(index + 1, "session")?;
             let file = need(index + 2, "jsonl file")?;
-            let raw = std::fs::read_to_string(file.as_str()).with_context(|| format!("reading {}", file))?;
+            let raw = std::fs::read_to_string(file.as_str())
+                .with_context(|| format!("reading {}", file))?;
             let messages: Vec<Value> = raw
                 .lines()
                 .filter(|l| !l.trim().is_empty())
                 .map(|l| serde_json::from_str(l).context("line is not JSON"))
                 .collect::<Result<_, _>>()?;
-            let (added, total) = client::store_merge(&base, token.as_deref(), session, &messages).await?;
+            let (added, total) =
+                client::store_merge(&base, token.as_deref(), session, &messages).await?;
             json!({"ok": true, "added": added, "total": total})
         }
         other => bail!("unknown sess op {other}"),
@@ -599,7 +644,8 @@ async fn sync_cli(args: &[String]) -> Result<()> {
     }
     let base = client::parse_base(&resolve_url(None)?)?;
     let mirror = std::path::PathBuf::from(resolve_mirror_dir(None));
-    let (pushed, pulled) = client::sync_mirror(&base, resolve_token(None).as_deref(), &mirror).await?;
+    let (pushed, pulled) =
+        client::sync_mirror(&base, resolve_token(None).as_deref(), &mirror).await?;
     println!("sync ok: pushed {pushed} line(s), pulled {pulled} line(s)");
     Ok(())
 }
