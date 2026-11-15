@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 toml = "0.9"
 uuid = { version = "1", features = ["v4"] }
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 
 [[bin]]
 name = "stub-server"
