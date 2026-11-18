@@ -323,9 +323,11 @@ The adaptation layer does **one-way translation** between transport and zonepair
 | argv form | File/state evidence | Output action |
 |---|---|---|
 | `--session-id X` | — | journal `register` → `registered`; E3 pull after post-relay |
-| `--session-id X --no-session-persistence` | — | Zero action |
-| `--resume X` | file contains `forkedFrom` ∧ no `pull` ∧ no `publishedAt` ∧ tombstone not hit | Publish wait (§8.1) |
-| `--resume X` | `pull` or `publishedAt` present / tombstone hit / zero complete lines and no record | Zero sync action |
+| `--session-id X --no-session-persistence` | — | Zero action [CLARIFIED — impl/mirror-sync, see below] |
+| `--resume X` (with or without `--no-session-persistence`) | file contains `forkedFrom` ∧ no `pull` ∧ no `publishedAt` ∧ tombstone not hit | Publish wait (§8.1) |
+| `--resume X` (with or without `--no-session-persistence`) | `pull` or `publishedAt` present / tombstone hit / zero complete lines and no record | Zero sync action |
+
+`--resume X --no-session-persistence` [CLARIFIED — impl/mirror-sync]: the side-call/compaction argv shape is judged by `forkedFrom` file evidence like any resume — `--no-session-persistence` exempts pull/register obligations (B writes nothing back), never the publish obligation of a resume target that exists only on A. The zero-action exemption covers only `--session-id X --no-session-persistence` and flagless argv.
 
 How `forkedFrom` is read: resolve `<X>.jsonl` under `projects/**` (any depth, first hit, same semantics as SDK find), check whether any line's `forkedFrom.sessionId` exists. Ordering guarantee comes from the adapter's own branch (write fork file + validate) → open (spawn) sequence: by the time the stub reads, the file is fully persisted. If the file is coincidentally manually deleted at that moment, treat as normal resume — B-side resume of a missing session already fails loudly; it is B's missing partition, not a new failure mode added by this design.
 

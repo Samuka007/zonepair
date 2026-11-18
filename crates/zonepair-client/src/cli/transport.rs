@@ -84,7 +84,10 @@ enum PreRelay<'a> {
     /// `--session-id X` — journal `register`; E3 pull lands post-relay.
     Register(&'a str),
     /// `--session-id … --no-session-persistence`, or no session flag at
-    /// all — literally nothing is owed.
+    /// all — literally nothing is owed. Scoped to non-resume argv only:
+    /// `--resume … --no-session-persistence` still owes the §6.2
+    /// fork-publish judgment (§8.3, §11) — no-persistence exempts B's
+    /// write-back obligations, not A's publish of an A-only transcript.
     Nothing,
     /// `--resume X` + the §6.2 continuation-fork predicate — journal
     /// `ensure-task{phase:validated}` and block on `ensure_published`.
@@ -100,7 +103,12 @@ fn decide<'a>(
     file: &classify::FileProbe,
     record: Option<&SessionRecord>,
 ) -> PreRelay<'a> {
-    if shape.no_persist {
+    // `--no-session-persistence` zeroes NEW/flagless argv only — it
+    // exempts pull/register, never a resume's publish obligation: a
+    // `--resume` target that exists only on A still owes its transcript
+    // to B (§8.3/§11: the side-call/compaction argv shape goes through
+    // the same forkedFrom evidence as any resume).
+    if shape.no_persist && !matches!(shape.session, Some(SessionArg::Resume(_))) {
         return PreRelay::Nothing;
     }
     match shape.session {
@@ -518,6 +526,31 @@ mod tests {
         );
         assert!(journal_intents(&mirror).is_empty());
         assert!(!state::sync_dir(&mirror).exists());
+    }
+
+    // T-621b: `--resume X --no-session-persistence` is judged by
+    // forkedFrom evidence like any resume — the no-persistence exemption
+    // covers pull/register, never an A-only transcript's publish
+    // (the side-call/compaction argv shape, §8.3/§11).
+    #[test]
+    fn t621b_resume_no_persistence_still_publishes() {
+        let shape = shape_of(&["--resume", "s2", "--no-session-persistence"]);
+        // Fork file evidence + no record → publish wait stands.
+        let forked = classify::FileProbe {
+            exists: true,
+            forked_from: true,
+            ..classify::FileProbe::default()
+        };
+        assert_eq!(
+            decide(&shape, &forked, None),
+            PreRelay::Publish("s2")
+        );
+        // No file evidence → plain resume no-op, exactly like a
+        // persistence-flagged resume that misses.
+        assert_eq!(
+            decide(&shape, &classify::FileProbe::absent(), None),
+            PreRelay::ResumeNoop
+        );
     }
 
     // T-622: fork-resume — file carries `forkedFrom`, no pull/publishedAt,
