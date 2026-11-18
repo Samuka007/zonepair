@@ -1,0 +1,10 @@
+[package]
+name = "zonepair-e2e"
+version.workspace = true
+edition.workspace = true
+description = "Test artifacts: the zonepair-e2e harness and claude-mock binaries; never shipped in a production image"
+
+[dependencies]
+zonepair-client.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

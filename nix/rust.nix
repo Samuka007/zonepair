@@ -24,12 +24,17 @@ let
   # each bin becomes a `--bin` flag on cargoBuildFlags, so cargo only builds
   # what the package should install (the install hook copies the built bins).
   # null = no flags = the whole workspace, all four bins (`stub`).
+  #
+  # `doCheck` defaults ON for the full build (checks.default's suite) and OFF
+  # for single-bin builds: the e2e harness spawns sibling bins that a
+  # `cargoBuildFlags = --bin X` build never produces, so `cargo test` inside
+  # a restricted package can only fail. The suite is the full drv's job.
   mkStub =
     {
       rustPlatform,
       bins ? null,
       mainProgram ? "stub-server",
-      doCheck ? true,
+      doCheck ? (bins == null),
       meta ? { },
       extra ? { },
     }:

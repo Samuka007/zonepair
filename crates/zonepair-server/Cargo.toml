@@ -1,0 +1,20 @@
+[package]
+name = "zonepair-server"
+version.workspace = true
+edition.workspace = true
+description = "Machine B: HTTP/WS listener, session-store projection, Claude process relay; only ever accepts connections"
+
+[dependencies]
+zonepair-proto.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+sha2.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+base64.workspace = true

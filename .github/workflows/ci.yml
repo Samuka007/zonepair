@@ -49,4 +49,8 @@ jobs:
           name: samuka007
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
+      # `cargo test` alone never produces the plain sibling bins the e2e
+      # harness spawns (stub-client/stub-server/claude-mock) — build them
+      # first so a cold checkout has them in target/<profile>/.
+      - run: nix develop -c cargo build --workspace --bins
       - run: nix develop -c cargo test --workspace
