@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use support::{store_at, tmpdir};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -194,6 +195,17 @@ fn write_raw(root: &Path, rel: &str, content: &[u8]) -> PathBuf {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, content).unwrap();
     path
+}
+
+/// Stamps a file's mtime back `ago` seconds — `set_modified` needs a handle
+/// whose metadata may be set, so the file is (re)opened writable.
+fn set_mtime(path: &Path, ago: Duration) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(SystemTime::now() - ago)
+        .unwrap();
 }
 
 /// T-201: stable_boundary's four shapes (RFC-0004-b-endpoints §5).
@@ -459,8 +471,8 @@ async fn create_exclusive_refuses_to_clobber() {
 }
 
 /// T-241: locate boundaries — invalid ids refused, miss vs hit, symlinks
-/// never followed, duplicate names resolve to the lexicographically first
-/// path (RFC-0004-b-endpoints §4.2).
+/// never followed (RFC-0004-b-endpoints §4.2); duplicate-name resolution is
+/// covered by the newest-mtime test below.
 #[tokio::test]
 async fn locate_boundaries() {
     let (root, store) = store_at("t241");
@@ -497,20 +509,41 @@ async fn locate_boundaries() {
     assert!(Store::fstat(&fd).unwrap().size > 0);
 }
 
-/// T-241b: duplicate `<sid>.jsonl` under the tree is abnormal — the
-/// lexicographically first path wins (with a warn) (RFC-0004-b-endpoints §4.2).
+/// T-241b [CLARIFIED — impl/mirror-sync]: duplicate `<sid>.jsonl` under the
+/// tree is abnormal-but-real — the NEWEST-MTIME path wins (with a warn),
+/// lexicographic order is only the tie-break (RFC-0004-b-endpoints §4.2).
 #[tokio::test]
-async fn locate_duplicate_names_pick_lexicographically_first() {
+async fn locate_duplicate_names_pick_newest_mtime() {
     let (root, store) = store_at("t241dup");
-    // "dup.jsonl" sorts before "nested/dup.jsonl" under proj-a.
-    write_raw(&root, "projects/proj-a/dup.jsonl", b"MARKER_A\n");
-    write_raw(&root, "projects/proj-a/nested/dup.jsonl", b"MARKER_N\n");
 
-    let fd = store.locate("dup").unwrap().unwrap();
-    let st = Store::fstat(&fd).unwrap();
-    let ReadSpan::Full(bytes) = Store::read_range(&fd, 0, st.size).unwrap() else {
-        panic!()
+    let read_winner = |store: &Store| -> String {
+        let fd = store.locate("dup").unwrap().unwrap();
+        let st = Store::fstat(&fd).unwrap();
+        let ReadSpan::Full(bytes) = Store::read_range(&fd, 0, st.size).unwrap() else {
+            panic!()
+        };
+        String::from_utf8(bytes).unwrap()
     };
-    assert_eq!(bytes, b"MARKER_A\n");
+
+    // Newest mtime wins even when it is the lexicographically LATER path —
+    // projects/z-proj sorts after projects/a-proj but carries the live copy
+    // (the file claude is still appending).
+    let stale = write_raw(&root, "projects/a-proj/dup.jsonl", b"MARKER_STALE\n");
+    let live = write_raw(&root, "projects/z-proj/dup.jsonl", b"MARKER_LIVE\n");
+    set_mtime(&stale, Duration::from_secs(3600));
+    set_mtime(&live, Duration::from_secs(60));
+    assert_eq!(read_winner(&store), "MARKER_LIVE\n");
+
+    // Equal mtimes: lexicographic path order is the deterministic tie-break.
+    let t = SystemTime::now() - Duration::from_secs(120);
+    for p in [&stale, &live] {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+    assert_eq!(read_winner(&store), "MARKER_STALE\n");
 }
 

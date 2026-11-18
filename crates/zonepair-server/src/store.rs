@@ -252,7 +252,11 @@ impl Store {
     }
 
     /// Exact-name recursive scan for `<session>.jsonl` under the root,
-    /// returning every regular-file hit sorted by path.
+    /// returning every regular-file hit ordered so `hits[0]` is the winner
+    /// every consumer takes: lexicographic by path, then — when more than
+    /// one hit exists — re-ranked by newest mtime (path order is only the
+    /// tie-break; a hit whose metadata fails, e.g. deleted mid-scan, sorts
+    /// last).
     ///
     /// `DirEntry::file_type` does not follow symlinks, so symlinked
     /// directories are never descended (a self-referencing link cannot loop
@@ -261,9 +265,11 @@ impl Store {
     /// never equal the exact target name, so they need no explicit filter
     /// here; `list` applies the glob filter on its own stem collection.
     ///
-    /// Duplicate `<sid>.jsonl` files under different subtrees are an abnormal
-    /// state: the lexicographically first path wins and the rest are warned
-    /// about, per §4.2.
+    /// Duplicate `<sid>.jsonl` files under different subtrees are an
+    /// abnormal-but-real state (§4.2): claude writes one `<sid>.jsonl` per
+    /// cwd-mangled project dir, so resuming the same session from a second
+    /// directory leaves same-sid files in two dirs — the live copy is the
+    /// one still being appended, hence the newest mtime wins.
     fn scan(&self, session: &str) -> Vec<PathBuf> {
         let target = OsString::from(format!("{session}.jsonl"));
         let mut hits = Vec::new();
@@ -286,8 +292,13 @@ impl Store {
         }
         hits.sort();
         if hits.len() > 1 {
+            // Newest mtime wins; the pre-sort's lexicographic path order is
+            // the tie-break, and a hit whose metadata fails (deleted
+            // mid-scan) sorts last — None < Some(_).
+            let mtime = |p: &PathBuf| fs::metadata(p).and_then(|m| m.modified()).ok();
+            hits.sort_by(|a, b| mtime(b).cmp(&mtime(a)).then_with(|| a.cmp(b)));
             eprintln!(
-                "store: duplicate {session}.jsonl hits; using {}",
+                "store: duplicate {session}.jsonl hits; using newest-mtime winner {}",
                 hits[0].display()
             );
         }
