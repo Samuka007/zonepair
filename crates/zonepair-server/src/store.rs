@@ -55,7 +55,10 @@ fn file_stat(m: &std::fs::Metadata) -> (u64, u64, i64, i64) {
     const EPOCH_TICKS: i64 = 116_444_736_000_000_000;
     let to_ns = |t: u64| (t as i64 - EPOCH_TICKS) * 100;
     (
-        m.file_index(),
+        // Stable std exposes no inode on windows (file_index is unstable),
+        // so identity narrows to (size, mtime, ctime) — a write still moves
+        // last_write_time, which is what the snapshot actually detects.
+        0,
         m.file_size(),
         to_ns(m.last_write_time()),
         to_ns(m.creation_time()),
