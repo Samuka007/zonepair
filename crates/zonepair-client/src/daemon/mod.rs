@@ -561,15 +561,25 @@ mod tests {
             },
         )
         .unwrap();
-        // Wait until the pull lands in state (the loop consumed it).
+        // Wait until the pull lands in state (the loop consumed it). The
+        // record appears only after the daemon picks the intent up, so the
+        // poll must tolerate its absence — indexing would panic on a slow
+        // runner before the loop ever ran.
         for _ in 0..100 {
-            if shared.with_state(|st| st.sessions["s9"].pull_pending.is_some()) {
+            if shared.with_state(|st| {
+                st.sessions
+                    .get("s9")
+                    .is_some_and(|s| s.pull_pending.is_some())
+            }) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
-            shared.with_state(|st| st.sessions["s9"].pull_pending.is_some()),
+            shared.with_state(|st| st
+                .sessions
+                .get("s9")
+                .is_some_and(|s| s.pull_pending.is_some())),
             "journal poll must consume the appended intent"
         );
         assert!(shared.journal_dir.read_dir().unwrap().next().is_none());
