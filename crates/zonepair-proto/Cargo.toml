@@ -1,0 +1,13 @@
+[package]
+name = "zonepair-proto"
+version.workspace = true
+edition.workspace = true
+description = "Shared wire protocol for the stub pair: ws-line-v1 framing constants and the env allowlist"
+
+[dependencies]
+serde.workspace = true
+sha2.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

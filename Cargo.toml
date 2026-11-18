@@ -1,44 +1,29 @@
-[package]
-name = "claude-io-stub"
-version = "0.1.0"
-edition = "2021"
-description = "C/S stub pair: relay OpenCode's Claude Agent SDK stdio/control channel to a remote claude binary, plus session-store projection RPC"
+[workspace]
+resolver = "2"
+members = [
+    "crates/zonepair-proto",
+    "crates/zonepair-server",
+    "crates/zonepair-client",
+    "crates/zonepair-e2e",
+]
 
-[dependencies]
-anyhow = "1"
-axum = { version = "0.8", features = ["ws"] }
-dialoguer = { version = "0.12", default-features = false, features = ["password"] }
-dirs = "7.0.0"
-futures-util = "0.3"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+[workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "process", "sync", "time"] }
-tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-toml = "0.9"
-uuid = { version = "1", features = ["v4"] }
-webpki-roots = "0.26"
+anyhow = "1"
+tokio = { version = "1", features = [
+    "rt-multi-thread", "macros", "net", "io-util", "io-std",
+    "process", "sync", "time",
+] }
+sha2 = "0.10"
+base64 = "0.22"
+zonepair-proto = { path = "crates/zonepair-proto" }
+zonepair-client = { path = "crates/zonepair-client" }
 
-[[bin]]
-name = "stub-server"
-path = "src/bin/stub-server.rs"
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
 
-[[bin]]
-name = "stub-client"
-path = "src/bin/stub-client.rs"
-
-[[bin]]
-name = "claude-mock"
-path = "src/bin/claude-mock.rs"
-
-[[bin]]
-name = "zonepair-e2e"
-path = "src/bin/zonepair-e2e.rs"
-
+# Virtual-workspace root profiles apply to the whole workspace.
 [profile.release]
 strip = true
-
-[dev-dependencies]
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
-tokio-rustls = { version = "0.26", default-features = false }
