@@ -28,8 +28,51 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{FileExt, MetadataExt};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+
+/// `(ino, size, mtime_ns, ctime_ns)` from platform metadata. Unix maps the
+/// stat tuple directly; Windows substitutes `file_index` for `ino`, derives
+/// both timestamps from the FILETIME pair (creation stands in for ctime —
+/// NTFS has no inode-change clock), and reports file identity at the same
+/// granularity the fingerprint slot needs.
+#[cfg(unix)]
+fn file_stat(m: &std::fs::Metadata) -> (u64, u64, i64, i64) {
+    (
+        m.ino(),
+        m.size(),
+        m.mtime() * 1_000_000_000 + m.mtime_nsec(),
+        m.ctime() * 1_000_000_000 + m.ctime_nsec(),
+    )
+}
+
+#[cfg(windows)]
+fn file_stat(m: &std::fs::Metadata) -> (u64, u64, i64, i64) {
+    // FILETIME counts 100-ns ticks since 1601-01-01.
+    const EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+    let to_ns = |t: u64| (t as i64 - EPOCH_TICKS) * 100;
+    (
+        m.file_index(),
+        m.file_size(),
+        to_ns(m.last_write_time()),
+        to_ns(m.creation_time()),
+    )
+}
+
+/// Positional read: `pread` on unix, `seek_read` on windows.
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], pos: u64) -> io::Result<usize> {
+    file.read_at(buf, pos)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buf: &mut [u8], pos: u64) -> io::Result<usize> {
+    use std::os::windows::fs::FileExt as _;
+    file.seek_read(buf, pos)
+}
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
@@ -384,11 +427,12 @@ impl Store {
     #[doc(hidden)]
     pub fn fstat(file: &File) -> Result<StatSnap> {
         let m = file.metadata().context("fstat session file")?;
+        let (ino, size, mtime_ns, ctime_ns) = file_stat(&m);
         Ok(StatSnap {
-            ino: m.ino(),
-            size: m.size(),
-            mtime_ns: m.mtime() * 1_000_000_000 + m.mtime_nsec(),
-            ctime_ns: m.ctime() * 1_000_000_000 + m.ctime_nsec(),
+            ino,
+            size,
+            mtime_ns,
+            ctime_ns,
         })
     }
 
@@ -703,9 +747,7 @@ fn pread_collect(file: &File, offset: u64, want: u64) -> Result<Vec<u8>> {
     let mut chunk = [0u8; PREAD_CHUNK];
     while pos < end {
         let take = ((end - pos) as usize).min(PREAD_CHUNK);
-        let n = file
-            .read_at(&mut chunk[..take], pos)
-            .context("pread session file")?;
+        let n = read_at(file, &mut chunk[..take], pos).context("pread session file")?;
         if n == 0 {
             break;
         }
