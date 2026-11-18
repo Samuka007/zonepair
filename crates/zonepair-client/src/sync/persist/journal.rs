@@ -16,6 +16,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::io;
 use std::io::Write;
+use std::time::Duration;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -778,16 +779,32 @@ pub(crate) fn sid_of(intent: &Intent) -> Option<&str> {
     }
 }
 
+/// How old a file must be before cleanup may treat it as residue. A live
+/// append's `.tmp` lives for milliseconds (open → write → fsync → rename);
+/// anything older than this that was never renamed can only be an orphan
+/// of a dead writer. Deleting a younger `.tmp` would race an in-flight
+/// `append` — its rename lands ENOENT and a confirmed intent dies silently.
+/// The cost of a miss is residue surviving to the NEXT boot, which is
+/// cheap; the cost of a false positive is a lost intent, which is not.
+const DEBRIS_MIN_AGE: Duration = Duration::from_secs(5);
+
 /// Delete debris and `*.tmp` residue files — the journal half of startup
 /// cleanup step 2 (§9.1-2). Returns the number removed. Non-regular
-/// entries (directories, vanished paths) are SKIPPED — `remove_file`
-/// fails on a directory and a single bad entry must never wedge boot
-/// cleanup.
+/// entries (directories, vanished paths) and files younger than
+/// `DEBRIS_MIN_AGE` are SKIPPED — `remove_file` fails on a directory, a
+/// vanished path is already done, and a fresh `.tmp` may still be mid-
+/// append (see `DEBRIS_MIN_AGE`); none of them may wedge boot cleanup.
 pub fn remove_debris(dir: &Path, debris: &[Debris]) -> Result<usize> {
     let mut removed = 0;
     for d in debris {
         let path = dir.join(&d.name);
-        if !path.is_file() {
+        let stale = std::fs::metadata(&path).is_ok_and(|m| {
+            m.is_file()
+                && m.modified().is_ok_and(|t| {
+                    t.elapsed().unwrap_or(Duration::ZERO) >= DEBRIS_MIN_AGE
+                })
+        });
+        if !stale {
             continue;
         }
         std::fs::remove_file(&path)
@@ -855,10 +872,28 @@ mod tests {
         let (entries, debris) = read_pending(&journal).unwrap();
         assert_eq!(entries.len(), 1, "tmp must not enter the consume set");
         assert_eq!(debris.len(), 2);
+        // Freshly-planted residue is skipped: it is indistinguishable from
+        // an in-flight append's `.tmp`, and deleting it would lose a live
+        // intent (the boot-order race this gate exists for).
+        assert_eq!(
+            remove_debris(&journal, &debris).unwrap(),
+            0,
+            "fresh residue survives — it may be a live append"
+        );
+        // Aged past DEBRIS_MIN_AGE the same names are unambiguous orphans.
+        let old = std::time::SystemTime::now() - Duration::from_secs(30);
+        for name in ["9999-9-9.tmp", "README"] {
+            std::fs::File::options()
+                .write(true)
+                .open(journal.join(name))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
         assert_eq!(
             remove_debris(&journal, &debris).unwrap(),
             2,
-            "startup cleanup removes residue"
+            "startup cleanup removes aged residue"
         );
         std::fs::remove_dir_all(&mirror).unwrap();
     }
@@ -1513,6 +1548,13 @@ mod tests {
         let (mirror, _sync, journal) = setup("debris-dir");
         std::fs::create_dir(journal.join("oddball")).unwrap();
         std::fs::write(journal.join("stray"), b"x").unwrap();
+        // Age the stray past the residue gate so the sweep removes it.
+        std::fs::File::options()
+            .write(true)
+            .open(journal.join("stray"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(30))
+            .unwrap();
         let (_, debris) = read_pending(&journal).unwrap();
         assert_eq!(debris.len(), 2);
         assert_eq!(remove_debris(&journal, &debris).unwrap(), 1);

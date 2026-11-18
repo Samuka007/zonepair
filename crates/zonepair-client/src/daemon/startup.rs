@@ -405,9 +405,20 @@ mod tests {
         write_file(&mirror, "projects/x/s2.jsonl.zp1", b"partial");
         // .sync/*.tmp (crashed state commit).
         std::fs::write(sync.join(".state.json.tmp"), b"{").unwrap();
-        // Journal debris: a half-written append tmp + an odd name.
+        // Journal debris: a half-written append tmp + an odd name. Both
+        // must read as ORPHANS of a dead writer, so age them past the
+        // residue gate — a fresh *.tmp could be a live append in flight.
         std::fs::write(journal_dir.join("5-5-5.tmp"), b"{\"op\":").unwrap();
         std::fs::write(journal_dir.join("README"), b"junk").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30);
+        for name in ["5-5-5.tmp", "README"] {
+            std::fs::File::options()
+                .write(true)
+                .open(journal_dir.join(name))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
         // Formal-but-unparseable record (empty + bad JSON).
         std::fs::write(journal_dir.join("6-1-1.json"), b"").unwrap();
         std::fs::write(journal_dir.join("7-1-1.json"), b"{not json").unwrap();
